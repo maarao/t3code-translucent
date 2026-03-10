@@ -123,6 +123,7 @@ const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
 const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
+const WINDOW_BACKGROUND_COLOR = "#00000000";
 
 type WindowTitleBarOptions = Pick<
   BrowserWindowConstructorOptions,
@@ -1655,10 +1656,6 @@ function getIconOption(): { icon: string } | Record<string, never> {
   return iconPath ? { icon: iconPath } : {};
 }
 
-function getInitialWindowBackgroundColor(): string {
-  return nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
-}
-
 function getWindowTitleBarOptions(): WindowTitleBarOptions {
   if (process.platform === "darwin") {
     return {
@@ -1684,7 +1681,7 @@ function syncWindowAppearance(window: BrowserWindow): void {
     return;
   }
 
-  window.setBackgroundColor(getInitialWindowBackgroundColor());
+  window.setBackgroundColor(WINDOW_BACKGROUND_COLOR);
   const { titleBarOverlay } = getWindowTitleBarOptions();
   if (typeof titleBarOverlay === "object") {
     window.setTitleBarOverlay(titleBarOverlay);
@@ -1707,7 +1704,14 @@ function createWindow(): BrowserWindow {
     minHeight: 620,
     show: isDevelopment,
     autoHideMenuBar: true,
-    backgroundColor: getInitialWindowBackgroundColor(),
+    transparent: true,
+    backgroundColor: WINDOW_BACKGROUND_COLOR,
+    ...(process.platform === "darwin"
+      ? {
+          vibrancy: "under-window",
+          visualEffectState: "active" as const,
+        }
+      : {}),
     ...getIconOption(),
     title: APP_DISPLAY_NAME,
     ...getWindowTitleBarOptions(),
