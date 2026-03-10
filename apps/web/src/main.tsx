@@ -21,6 +21,7 @@ if (isElectron) {
 }
 
 document.title = APP_DISPLAY_NAME;
+document.documentElement.dataset.runtime = isElectron ? "electron" : "web";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
