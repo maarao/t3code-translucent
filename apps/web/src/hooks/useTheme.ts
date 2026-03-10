@@ -65,6 +65,19 @@ function normalizeThemeColor(value: string | null | undefined): string | null {
   return value?.trim() ?? null;
 }
 
+function isElectronRuntime() {
+  return (
+    typeof window !== "undefined" &&
+    (window.desktopBridge !== undefined || window.nativeApi !== undefined)
+  );
+}
+
+function clearBrowserChromeThemeColor() {
+  document.documentElement.style.removeProperty("background-color");
+  document.body?.style.removeProperty("background-color");
+  document.querySelector<HTMLMetaElement>(DYNAMIC_THEME_COLOR_SELECTOR)?.remove();
+}
+
 function resolveBrowserChromeSurface(): HTMLElement {
   return (
     document.querySelector<HTMLElement>("main[data-slot='sidebar-inset']") ??
@@ -75,6 +88,11 @@ function resolveBrowserChromeSurface(): HTMLElement {
 
 export function syncBrowserChromeTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle === "undefined") return;
+  if (isElectronRuntime()) {
+    clearBrowserChromeThemeColor();
+    return;
+  }
+
   const surfaceColor = normalizeThemeColor(
     getComputedStyle(resolveBrowserChromeSurface()).backgroundColor,
   );
