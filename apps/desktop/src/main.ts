@@ -1206,6 +1206,14 @@ function createWindow(): BrowserWindow {
     minHeight: 620,
     show: false,
     autoHideMenuBar: true,
+    transparent: true,
+    backgroundColor: "#00000000",
+    ...(process.platform === "darwin"
+      ? {
+          vibrancy: "under-window",
+          visualEffectState: "active" as const,
+        }
+      : {}),
     ...getIconOption(),
     title: APP_DISPLAY_NAME,
     titleBarStyle: "hiddenInset",
