@@ -23,6 +23,20 @@ it("calculates cached-input discounted cost", () => {
   assert.equal(Math.round(usage.estimatedCostUsd * 1_000_000), 506_404_919);
 });
 
+it("includes GPT-5.5 pricing", () => {
+  const usage = calculateUsageCost(
+    {
+      inputTokens: 1_396_548_218,
+      cachedInputTokens: 1_346_180_096,
+      outputTokens: 2_929_306,
+    },
+    MODEL_PRICING["gpt-5.5"],
+  );
+
+  assert.equal(usage.uncachedInputTokens, 50_368_122);
+  assert.equal(Math.round(usage.estimatedCostUsd * 1_000_000), 1_012_809_838);
+});
+
 it("adds token usage without mutating either side", () => {
   const left = {
     inputTokens: 10,
