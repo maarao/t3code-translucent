@@ -91,6 +91,11 @@ interface SpendReport {
 }
 
 export const MODEL_PRICING = {
+  "gpt-5.5": {
+    inputPerMillionUsd: 5,
+    cachedInputPerMillionUsd: 0.5,
+    outputPerMillionUsd: 30,
+  },
   "gpt-5.4": {
     inputPerMillionUsd: 2.5,
     cachedInputPerMillionUsd: 0.25,
