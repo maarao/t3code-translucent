@@ -5,6 +5,7 @@ import {
   addTokenUsage,
   calculateUsageCost,
   isDedicatedReviewSource,
+  readModelFromSelectionJson,
   resolveLastDaysWindow,
   resolveEffectiveWindow,
 } from "./estimate-openai-api-spend.ts";
@@ -65,6 +66,12 @@ it("identifies dedicated review sources", () => {
   assert.equal(isDedicatedReviewSource('{"subagent":"review"}'), true);
   assert.equal(isDedicatedReviewSource('{"subagent":"worker"}'), false);
   assert.equal(isDedicatedReviewSource("not-json"), false);
+});
+
+it("reads models from persisted model selections", () => {
+  assert.equal(readModelFromSelectionJson('{"provider":"codex","model":"gpt-5.5"}'), "gpt-5.5");
+  assert.equal(readModelFromSelectionJson('{"provider":"codex"}'), null);
+  assert.equal(readModelFromSelectionJson(null), null);
 });
 
 it("applies explicit window bounds over observed activity bounds", () => {

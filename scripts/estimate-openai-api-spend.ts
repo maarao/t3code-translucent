@@ -36,6 +36,12 @@ interface T3ActivityRow {
   readonly threadTitle: string;
   readonly threadCreatedAt: string;
   readonly activityCreatedAt: string;
+  readonly pendingMessageId: string | null;
+  readonly threadModelSelectionJson: string | null;
+  readonly payloadJson: string;
+}
+
+interface TurnStartEventRow {
   readonly payloadJson: string;
 }
 
@@ -67,6 +73,10 @@ interface T3SpendSummary {
   };
   readonly window: TimeWindow;
   readonly usage: UsageCostSummary;
+  readonly byModel: Record<
+    string,
+    { readonly threads: number; readonly usageEvents: number; readonly usage: UsageCostSummary }
+  >;
 }
 
 interface ReviewSpendSummary {
@@ -82,7 +92,9 @@ interface ReviewSpendSummary {
 interface SpendReport {
   readonly generatedAt: string;
   readonly assumptions: {
-    readonly t3PricingModel: string;
+    readonly pricingMode: "recorded-models" | "forced-model";
+    readonly forcedModel?: string;
+    readonly t3PricingModel?: string;
     readonly reviewWindow: "same-as-t3" | "all";
   };
   readonly t3Code: T3SpendSummary;
@@ -117,10 +129,11 @@ Usage:
 Options:
   --json                         Print machine-readable JSON.
   --last-days <days>             Use a rolling window ending now.
+  --model <model>                Price T3 Code and review usage as one model.
   --window-start <timestamp>     Restrict T3 usage to a start timestamp.
   --window-end <timestamp>       Restrict T3 usage to an end timestamp.
   --review-window <mode>         "same-as-t3" (default) or "all".
-  --t3-pricing-model <model>     Pricing model for T3 threads. Default: gpt-5.4
+  --t3-pricing-model <model>     Price only T3 Code usage as one model.
   --t3-state-db <path>           Override T3 Code sqlite path.
   --codex-state-db <path>        Override Codex sqlite path.
   --help                         Show this help.
@@ -227,6 +240,20 @@ export function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
   };
 }
 
+export function readModelFromSelectionJson(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const parsed: unknown = JSON.parse(value);
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const model = parsed.model;
+  return typeof model === "string" && model.trim().length > 0 ? model : null;
+}
+
 export function resolveEffectiveWindow(
   observed: TimeWindow,
   explicit?: {
@@ -286,13 +313,68 @@ function readT3Payload(row: T3ActivityRow): TokenUsage {
   };
 }
 
+function readTurnStartModelSelections(db: DatabaseSync): Map<string, string> {
+  const rows = asRows<Array<TurnStartEventRow>>(
+    db
+      .prepare(`
+      SELECT payload_json AS payloadJson
+      FROM orchestration_events
+      WHERE event_type = 'thread.turn-start-requested'
+    `)
+      .all(),
+  );
+
+  const output = new Map<string, string>();
+  for (const row of rows) {
+    const parsed: unknown = JSON.parse(row.payloadJson);
+    if (!isRecord(parsed)) {
+      continue;
+    }
+
+    const threadId = parsed.threadId;
+    const messageId = parsed.messageId;
+    const modelSelection = parsed.modelSelection;
+    if (
+      typeof threadId !== "string" ||
+      typeof messageId !== "string" ||
+      !isRecord(modelSelection) ||
+      typeof modelSelection.model !== "string"
+    ) {
+      continue;
+    }
+
+    output.set(`${threadId}:${messageId}`, modelSelection.model);
+  }
+
+  return output;
+}
+
+function resolveT3ActivityModel(
+  row: T3ActivityRow,
+  turnStartModelSelections: ReadonlyMap<string, string>,
+): string {
+  if (row.pendingMessageId !== null) {
+    const turnModel = turnStartModelSelections.get(`${row.threadId}:${row.pendingMessageId}`);
+    if (turnModel !== undefined) {
+      return turnModel;
+    }
+  }
+
+  const threadModel = readModelFromSelectionJson(row.threadModelSelectionJson);
+  if (threadModel !== null) {
+    return threadModel;
+  }
+
+  throw new Error(`Could not resolve model for T3 Code activity ${row.activityId}.`);
+}
+
 function asRows<T>(value: unknown): T {
   return value as T;
 }
 
 function loadT3SpendSummary(
   dbPath: string,
-  pricing: PricingRates,
+  forcedModel: string | undefined,
   explicitWindow?: {
     readonly start?: string;
     readonly end?: string;
@@ -307,9 +389,12 @@ function loadT3SpendSummary(
         t.title AS threadTitle,
         t.created_at AS threadCreatedAt,
         a.created_at AS activityCreatedAt,
+        pt.pending_message_id AS pendingMessageId,
+        t.model_selection_json AS threadModelSelectionJson,
         a.payload_json AS payloadJson
       FROM projection_thread_activities a
       INNER JOIN projection_threads t ON t.thread_id = a.thread_id
+      LEFT JOIN projection_turns pt ON pt.thread_id = a.thread_id AND pt.turn_id = a.turn_id
       WHERE a.kind = 'context-window.updated'
     `;
 
@@ -337,21 +422,41 @@ function loadT3SpendSummary(
     };
     const window = resolveEffectiveWindow(observedWindow, explicitWindow);
 
-    let usage: TokenUsage = {
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      outputTokens: 0,
-    };
     const threadIds = new Set<string>();
+    const byModelUsage = new Map<
+      string,
+      { usageEvents: number; usage: TokenUsage; threadIds: Set<string> }
+    >();
     let earliestThread = {
       id: firstRow.threadId,
       title: firstRow.threadTitle,
       createdAt: firstRow.threadCreatedAt,
     };
+    const turnStartModelSelections = readTurnStartModelSelections(db);
 
     for (const row of rows) {
-      usage = addTokenUsage(usage, readT3Payload(row));
+      const rowUsage = readT3Payload(row);
+      const model = forcedModel ?? resolveT3ActivityModel(row, turnStartModelSelections);
+      resolveKnownPricing(model);
+
       threadIds.add(row.threadId);
+
+      const existing = byModelUsage.get(model) ?? {
+        usageEvents: 0,
+        usage: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+        },
+        threadIds: new Set<string>(),
+      };
+      existing.threadIds.add(row.threadId);
+      byModelUsage.set(model, {
+        usageEvents: existing.usageEvents + 1,
+        usage: addTokenUsage(existing.usage, rowUsage),
+        threadIds: existing.threadIds,
+      });
+
       if (row.threadCreatedAt < earliestThread.createdAt) {
         earliestThread = {
           id: row.threadId,
@@ -361,12 +466,24 @@ function loadT3SpendSummary(
       }
     }
 
+    const byModel = Object.fromEntries(
+      Array.from(byModelUsage.entries()).map(([model, value]) => [
+        model,
+        {
+          threads: value.threadIds.size,
+          usageEvents: value.usageEvents,
+          usage: calculateUsageCost(value.usage, resolveKnownPricing(model)),
+        },
+      ]),
+    );
+
     return {
       threads: threadIds.size,
       usageEvents: rows.length,
       earliestThread,
       window,
-      usage: calculateUsageCost(usage, pricing),
+      usage: calculateCombinedUsage(Object.values(byModel)),
+      byModel,
     };
   } finally {
     db.close();
@@ -522,20 +639,17 @@ async function loadReviewSpendSummary(
   dbPath: string,
   windowStrategy: "same-as-t3" | "all",
   window?: TimeWindow,
+  forcedModel?: string,
 ): Promise<ReviewSpendSummary> {
   const sessions = await loadReviewSessions(dbPath, windowStrategy, window);
 
-  let totalUsage: TokenUsage = {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-  };
   const byModelUsage = new Map<string, { sessions: number; usage: TokenUsage }>();
 
   for (const session of sessions) {
-    totalUsage = addTokenUsage(totalUsage, session.usage);
+    const model = forcedModel ?? session.model;
+    resolveKnownPricing(model);
 
-    const existing = byModelUsage.get(session.model) ?? {
+    const existing = byModelUsage.get(model) ?? {
       sessions: 0,
       usage: {
         inputTokens: 0,
@@ -544,7 +658,7 @@ async function loadReviewSpendSummary(
       },
     };
 
-    byModelUsage.set(session.model, {
+    byModelUsage.set(model, {
       sessions: existing.sessions + 1,
       usage: addTokenUsage(existing.usage, session.usage),
     });
@@ -566,29 +680,14 @@ async function loadReviewSpendSummary(
     skippedWithoutUsage: sessions.skippedWithoutUsage,
     windowStrategy,
     ...(windowStrategy === "same-as-t3" && window !== undefined ? { window } : {}),
-    usage:
-      sessions.length === 0
-        ? calculateUsageCost(totalUsage, MODEL_PRICING["gpt-5.4"])
-        : {
-            inputTokens: totalUsage.inputTokens,
-            cachedInputTokens: totalUsage.cachedInputTokens,
-            uncachedInputTokens: totalUsage.inputTokens - totalUsage.cachedInputTokens,
-            outputTokens: totalUsage.outputTokens,
-            estimatedCostUsd: Array.from(byModelUsage.keys()).reduce((sum, model) => {
-              const summary = byModelUsage.get(model);
-              if (summary === undefined) {
-                return sum;
-              }
-              return (
-                sum + calculateUsageCost(summary.usage, resolveKnownPricing(model)).estimatedCostUsd
-              );
-            }, 0),
-          },
+    usage: calculateCombinedUsage(Object.values(byModel)),
     byModel,
   };
 }
 
-function calculateReviewCombinedUsage(summary: ReviewSpendSummary): UsageCostSummary {
+function calculateCombinedUsage(
+  summaries: ReadonlyArray<{ readonly usage: UsageCostSummary }>,
+): UsageCostSummary {
   let totalUsage: TokenUsage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -596,9 +695,9 @@ function calculateReviewCombinedUsage(summary: ReviewSpendSummary): UsageCostSum
   };
   let estimatedCostUsd = 0;
 
-  for (const value of Object.values(summary.byModel)) {
-    totalUsage = addTokenUsage(totalUsage, value.usage);
-    estimatedCostUsd += value.usage.estimatedCostUsd;
+  for (const summary of summaries) {
+    totalUsage = addTokenUsage(totalUsage, summary.usage);
+    estimatedCostUsd += summary.usage.estimatedCostUsd;
   }
 
   return {
@@ -613,13 +712,20 @@ function calculateReviewCombinedUsage(summary: ReviewSpendSummary): UsageCostSum
 async function createReport(options: {
   readonly t3StateDb: string;
   readonly codexStateDb: string;
-  readonly t3PricingModel: string;
+  readonly forcedModel?: string;
+  readonly t3PricingModel?: string;
   readonly reviewWindow: "same-as-t3" | "all";
   readonly lastDays?: number;
   readonly windowStart?: string;
   readonly windowEnd?: string;
 }): Promise<SpendReport> {
-  const t3Pricing = resolveKnownPricing(options.t3PricingModel);
+  if (options.forcedModel !== undefined) {
+    resolveKnownPricing(options.forcedModel);
+  }
+  if (options.t3PricingModel !== undefined) {
+    resolveKnownPricing(options.t3PricingModel);
+  }
+
   const explicitWindow =
     options.lastDays !== undefined
       ? resolveLastDaysWindow(options.lastDays)
@@ -632,34 +738,38 @@ async function createReport(options: {
             : {}),
         };
 
-  const t3Code = loadT3SpendSummary(options.t3StateDb, t3Pricing, explicitWindow);
+  const t3Code = loadT3SpendSummary(
+    options.t3StateDb,
+    options.forcedModel ?? options.t3PricingModel,
+    explicitWindow,
+  );
   const reviewWindow = options.reviewWindow === "same-as-t3" ? t3Code.window : undefined;
   const rawReviewSummary = await loadReviewSpendSummary(
     options.codexStateDb,
     options.reviewWindow,
     reviewWindow,
+    options.forcedModel,
   );
-  const codexReviews = {
-    ...rawReviewSummary,
-    usage: calculateReviewCombinedUsage(rawReviewSummary),
-  };
 
   const combined = {
-    inputTokens: t3Code.usage.inputTokens + codexReviews.usage.inputTokens,
-    cachedInputTokens: t3Code.usage.cachedInputTokens + codexReviews.usage.cachedInputTokens,
-    uncachedInputTokens: t3Code.usage.uncachedInputTokens + codexReviews.usage.uncachedInputTokens,
-    outputTokens: t3Code.usage.outputTokens + codexReviews.usage.outputTokens,
-    estimatedCostUsd: t3Code.usage.estimatedCostUsd + codexReviews.usage.estimatedCostUsd,
+    inputTokens: t3Code.usage.inputTokens + rawReviewSummary.usage.inputTokens,
+    cachedInputTokens: t3Code.usage.cachedInputTokens + rawReviewSummary.usage.cachedInputTokens,
+    uncachedInputTokens:
+      t3Code.usage.uncachedInputTokens + rawReviewSummary.usage.uncachedInputTokens,
+    outputTokens: t3Code.usage.outputTokens + rawReviewSummary.usage.outputTokens,
+    estimatedCostUsd: t3Code.usage.estimatedCostUsd + rawReviewSummary.usage.estimatedCostUsd,
   };
 
   return {
     generatedAt: new Date().toISOString(),
     assumptions: {
-      t3PricingModel: options.t3PricingModel,
+      pricingMode: options.forcedModel === undefined ? "recorded-models" : "forced-model",
+      ...(options.forcedModel !== undefined ? { forcedModel: options.forcedModel } : {}),
+      ...(options.t3PricingModel !== undefined ? { t3PricingModel: options.t3PricingModel } : {}),
       reviewWindow: options.reviewWindow,
     },
     t3Code,
-    codexReviews,
+    codexReviews: rawReviewSummary,
     combined,
   };
 }
@@ -667,7 +777,7 @@ async function createReport(options: {
 function printHumanReport(report: SpendReport): void {
   console.log(`T3 Code window: ${report.t3Code.window.start} -> ${report.t3Code.window.end}`);
   console.log(
-    `T3 Code estimate (${report.assumptions.t3PricingModel} pricing): ${formatUsd(report.t3Code.usage.estimatedCostUsd)}`,
+    `T3 Code estimate (${report.assumptions.t3PricingModel ?? report.assumptions.forcedModel ?? "recorded model"} pricing): ${formatUsd(report.t3Code.usage.estimatedCostUsd)}`,
   );
   console.log(
     `  Threads: ${formatInteger(report.t3Code.threads)} | Usage events: ${formatInteger(report.t3Code.usageEvents)}`,
@@ -680,9 +790,19 @@ function printHumanReport(report: SpendReport): void {
   console.log(
     `  Earliest thread: ${report.t3Code.earliestThread.title} (${report.t3Code.earliestThread.createdAt})`,
   );
+  const t3ModelKeys = Object.keys(report.t3Code.byModel).toSorted();
+  for (const model of t3ModelKeys) {
+    const entry = report.t3Code.byModel[model];
+    if (entry === undefined) {
+      continue;
+    }
+    console.log(
+      `  ${model}: ${formatInteger(entry.threads)} threads, ${formatInteger(entry.usageEvents)} events, ${formatUsd(entry.usage.estimatedCostUsd)}`,
+    );
+  }
   console.log("");
   console.log(
-    `Codex review estimate (${report.codexReviews.windowStrategy === "same-as-t3" ? "same window" : "all time"}): ${formatUsd(report.codexReviews.usage.estimatedCostUsd)}`,
+    `Codex review estimate (${report.assumptions.forcedModel ?? (report.codexReviews.windowStrategy === "same-as-t3" ? "same window" : "all time")}): ${formatUsd(report.codexReviews.usage.estimatedCostUsd)}`,
   );
   console.log(
     `  Sessions: ${formatInteger(report.codexReviews.sessions)} | Missing rollouts: ${formatInteger(
@@ -715,10 +835,11 @@ async function main(): Promise<void> {
       json: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       "last-days": { type: "string" },
+      model: { type: "string" },
       "window-start": { type: "string" },
       "window-end": { type: "string" },
       "review-window": { type: "string", default: "same-as-t3" },
-      "t3-pricing-model": { type: "string", default: "gpt-5.4" },
+      "t3-pricing-model": { type: "string" },
       "t3-state-db": { type: "string", default: defaults.t3StateDb },
       "codex-state-db": { type: "string", default: defaults.codexStateDb },
     },
@@ -765,10 +886,17 @@ async function main(): Promise<void> {
         })()
       : undefined;
 
+  if (values.model !== undefined && values["t3-pricing-model"] !== undefined) {
+    throw new Error("Cannot combine --model with --t3-pricing-model.");
+  }
+
   const report = await createReport({
     t3StateDb: values["t3-state-db"],
     codexStateDb: values["codex-state-db"],
-    t3PricingModel: values["t3-pricing-model"],
+    ...(values.model !== undefined ? { forcedModel: values.model } : {}),
+    ...(values["t3-pricing-model"] !== undefined
+      ? { t3PricingModel: values["t3-pricing-model"] }
+      : {}),
     reviewWindow,
     ...(parsedLastDays !== undefined ? { lastDays: parsedLastDays } : {}),
     ...(values["window-start"] !== undefined ? { windowStart: values["window-start"] } : {}),
