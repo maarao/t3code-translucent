@@ -154,14 +154,29 @@
   background: transparent;
 }
 
-:root[data-runtime="electron"] [data-slot="sidebar"],
 :root[data-runtime="electron"] [data-slot="sidebar-container"],
 :root[data-runtime="electron"] [data-slot="sidebar-inset"],
-:root[data-runtime="electron"] .thread-terminal-drawer,
-:root[data-runtime="electron"] .bg-card,
-:root[data-runtime="electron"] .bg-background {
+:root[data-runtime="electron"] .thread-terminal-drawer {
+  isolation: isolate;
+}
+
+:root[data-runtime="electron"] [data-slot="sidebar-container"]::before,
+:root[data-runtime="electron"] [data-slot="sidebar-inset"]::before,
+:root[data-runtime="electron"] .thread-terminal-drawer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
   backdrop-filter: blur(22px) saturate(1.2);
   -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  z-index: 0;
+}
+
+:root[data-runtime="electron"] [data-slot="sidebar-container"] > *,
+:root[data-runtime="electron"] [data-slot="sidebar-inset"] > *,
+:root[data-runtime="electron"] .thread-terminal-drawer > * {
+  position: relative;
+  z-index: 1;
 }
 
 body {
