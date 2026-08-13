@@ -95,12 +95,18 @@ it.layer(testLayer)("PiAdapter", (it) => {
         usedTokens: 0,
         maxTokens: 100_000,
       });
-      const taskProgress = events.find(
+      const taskProgress = events.filter(
         (event) =>
           event.type === "task.progress" && event.payload.taskId === taskStarted.payload.taskId,
       );
-      assert(taskProgress?.type === "task.progress");
-      assert.deepEqual(taskProgress.payload.contextUsage, {
+      assert.equal(taskProgress.length, 2);
+      assert(taskProgress[0]?.type === "task.progress");
+      assert.deepEqual(taskProgress[0].payload.contextUsage, {
+        usedTokens: 8_000,
+        maxTokens: 100_000,
+      });
+      assert(taskProgress[1]?.type === "task.progress");
+      assert.deepEqual(taskProgress[1].payload.contextUsage, {
         usedTokens: 16_000,
         maxTokens: 100_000,
       });

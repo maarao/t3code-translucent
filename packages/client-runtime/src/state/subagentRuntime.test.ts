@@ -341,7 +341,7 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.usage).toBeNull();
     expect(formatSubagentContextRemaining(agents[0]!.contextUsage)).toBe("80.0k ctx left");
     expect(formatSubagentContextRemaining({ usedTokens: null, maxTokens: 100_000 })).toBe(
-      "100k ctx",
+      "100k ctx max",
     );
   });
 

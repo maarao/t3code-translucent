@@ -216,6 +216,15 @@ function resultDetails(value: unknown) {
   return record(record(value)?.details);
 }
 
+function jsonRecord(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  try {
+    return record(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
 function resultText(value: unknown) {
   const content = record(value)?.content;
   if (!Array.isArray(content)) return undefined;
@@ -1116,6 +1125,13 @@ export function makePiAdapter(
         return;
       }
       if (type === "extension_ui_request") {
+        if (event.method === "setStatus" && event.statusKey === "subagents-runtime") {
+          const details = jsonRecord(event.statusText);
+          if (details?.version === 1) {
+            yield* handleSubagentToolResult(ctx, "subagent_status", { details });
+          }
+          return;
+        }
         const dialog = dialogQuestion(event);
         if (dialog) {
           const requestId = ApprovalRequestId.make(yield* randomUUIDv4);

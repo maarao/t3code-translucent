@@ -147,10 +147,15 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
       ? null
       : agent.role;
   const contextRemaining = formatSubagentContextRemaining(agent.contextUsage);
+  const tokenUsage = agent.usage
+    ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok`
+    : agent.contextUsage?.usedTokens !== null && agent.contextUsage?.usedTokens !== undefined
+      ? `${formatSubagentTokenCount(agent.contextUsage.usedTokens)} ctx used`
+      : null;
   const metadata = [
     modelLabel,
     contextRemaining,
-    agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
+    tokenUsage,
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);

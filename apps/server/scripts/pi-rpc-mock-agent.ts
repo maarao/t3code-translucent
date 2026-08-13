@@ -119,6 +119,23 @@ function handle(request: Record<string, unknown>) {
           isError: false,
         });
         send({
+          type: "extension_ui_request",
+          id: "subagent-runtime-1",
+          method: "setStatus",
+          statusKey: "subagents-runtime",
+          statusText: JSON.stringify({
+            version: 1,
+            results: [
+              {
+                id: "sa-1",
+                title: "reviewer",
+                status: "running",
+                contextUsage: { usedTokens: 8000, maxTokens: 100000 },
+              },
+            ],
+          }),
+        });
+        send({
           type: "tool_execution_start",
           toolCallId: "wait-tool",
           toolName: "subagent_wait",

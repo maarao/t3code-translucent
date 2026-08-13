@@ -954,7 +954,7 @@ export function formatSubagentModelLabel(
 export function formatSubagentContextRemaining(contextUsage: SubagentContextUsage | null) {
   if (!contextUsage) return null;
   if (contextUsage.usedTokens === null) {
-    return `${formatSubagentTokenCount(contextUsage.maxTokens)} ctx`;
+    return `${formatSubagentTokenCount(contextUsage.maxTokens)} ctx max`;
   }
   const remaining = Math.max(0, contextUsage.maxTokens - contextUsage.usedTokens);
   return `${formatSubagentTokenCount(remaining)} ctx left`;
