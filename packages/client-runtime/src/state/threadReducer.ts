@@ -38,8 +38,8 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
 /**
  * Matches the validity rule in `deriveLatestContextWindowSnapshot` (and the
  * server's snapshot-side `dropStaleContextWindowActivities`): rows without a
- * finite, non-negative `usedTokens` are skipped during the consumer's backward
- * walk, so they must not replace an earlier resolvable row here.
+ * a finite non-negative or explicit null `usedTokens` are resolvable. Null clears
+ * stale pre-compaction occupancy and must replace an earlier numeric row.
  */
 function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
   if (activity.kind !== "context-window.updated") {
@@ -50,7 +50,10 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
       ? (activity.payload as Record<string, unknown>)
       : null;
   const usedTokens = payload?.usedTokens;
-  return typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0;
+  return (
+    usedTokens === null ||
+    (typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0)
+  );
 }
 
 /**

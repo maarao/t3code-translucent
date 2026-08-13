@@ -120,6 +120,17 @@ export function ContextWindowMeter(props: {
               />
             </div>
           ) : null}
+          {usage.remainingTokens !== null ? (
+            <div className="flex items-center justify-between gap-3 text-[11px] leading-4">
+              <span className="text-secondary-label">Remaining</span>
+              <span className="font-medium tabular-nums text-secondary-label">
+                {formatContextWindowTokens(usage.remainingTokens)}
+                {usage.remainingPercentage !== null
+                  ? ` · ${Math.round(usage.remainingPercentage)}%`
+                  : ""}
+              </span>
+            </div>
+          ) : null}
           {showTotalProcessed ? (
             <div className="flex items-center justify-between gap-3 text-[11px] leading-4">
               <span className="text-secondary-label">Total processed</span>

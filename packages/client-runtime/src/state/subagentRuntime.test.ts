@@ -3,6 +3,7 @@ import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tool
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  formatSubagentContextRemaining,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   isAgentAttributedToolActivity,
@@ -323,6 +324,25 @@ describe("foldSubagentActivities", () => {
     expect(member.activationCount).toBeGreaterThanOrEqual(2);
     expect(member.error).toBeNull();
     expect(member.status).toBe("running");
+  });
+
+  it("tracks replaceable context occupancy separately from cumulative usage", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "ctx-agent",
+        contextUsage: { usedTokens: 80_000, maxTokens: 100_000 },
+      }),
+      activity("task.progress", {
+        taskId: "ctx-agent",
+        contextUsage: { usedTokens: 20_000, maxTokens: 100_000 },
+      }),
+    ]);
+    expect(agents[0]!.contextUsage).toEqual({ usedTokens: 20_000, maxTokens: 100_000 });
+    expect(agents[0]!.usage).toBeNull();
+    expect(formatSubagentContextRemaining(agents[0]!.contextUsage)).toBe("80.0k ctx left");
+    expect(formatSubagentContextRemaining({ usedTokens: null, maxTokens: 100_000 })).toBe(
+      "100k ctx",
+    );
   });
 
   it("drops non-http(s) session urls at the fold boundary", () => {

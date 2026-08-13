@@ -44,6 +44,21 @@ describe("contextWindow", () => {
     expect(snapshot).toBeNull();
   });
 
+  it("clears stale occupancy after compaction", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("activity-1", "context-window.updated", {
+        usedTokens: 90_000,
+        maxTokens: 100_000,
+      }),
+      makeActivity("activity-2", "context-window.updated", {
+        usedTokens: null,
+        maxTokens: 100_000,
+      }),
+    ]);
+
+    expect(snapshot).toBeNull();
+  });
+
   it("keeps valid zero-usage snapshots", () => {
     const snapshot = deriveLatestContextWindowSnapshot([
       makeActivity("activity-1", "context-window.updated", {

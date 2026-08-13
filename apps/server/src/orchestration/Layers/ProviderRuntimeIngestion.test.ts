@@ -3178,6 +3178,7 @@ describe("ProviderRuntimeIngestion", () => {
         taskId: "turn-task-1",
         description: "Comparing the desktop rollout chunks to the app-server stream.",
         summary: "Code reviewer is validating the desktop rollout chunks.",
+        contextUsage: { usedTokens: 24_000, maxTokens: 100_000 },
       },
     });
 
@@ -3245,6 +3246,10 @@ describe("ProviderRuntimeIngestion", () => {
     expect(progressPayload?.summary).toBe(
       "Code reviewer is validating the desktop rollout chunks.",
     );
+    expect(progressPayload?.contextUsage).toEqual({
+      usedTokens: 24_000,
+      maxTokens: 100_000,
+    });
     expect(completed?.kind).toBe("task.completed");
     expect(completedPayload?.detail).toBe("<proposed_plan>\n# Plan title\n</proposed_plan>");
     expect(

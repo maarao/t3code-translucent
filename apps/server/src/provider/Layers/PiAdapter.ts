@@ -26,6 +26,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
@@ -74,6 +75,7 @@ interface TaskMetadata {
   readonly title: string;
   readonly role?: string;
   readonly model?: string;
+  readonly contextUsage?: { readonly usedTokens?: number; readonly maxTokens: number };
   readonly taskType?: string;
   readonly workflowName?: string;
   readonly agentIndex?: number;
@@ -102,6 +104,7 @@ interface PiSessionContext {
   readonly taskTurnIds: Map<string, TurnId | undefined>;
   readonly taskMetadata: Map<string, TaskMetadata>;
   readonly taskNamespace: string;
+  readonly autoCompactionEnabled: boolean | undefined;
   activeTurnId: TurnId | undefined;
   syntheticTurn: boolean;
   activeTurnCompletion: Deferred.Deferred<void, Error> | undefined;
@@ -122,6 +125,23 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown) {
+  const number = numberValue(value);
+  return number !== undefined && Number.isInteger(number) && number >= 0 ? number : undefined;
+}
+
+function positiveInteger(value: unknown) {
+  const number = nonNegativeInteger(value);
+  return number !== undefined && number > 0 ? number : undefined;
+}
+
+function taskContextUsage(usedValue: unknown, maxValue: unknown) {
+  const maxTokens = positiveInteger(maxValue);
+  if (maxTokens === undefined) return undefined;
+  const usedTokens = nonNegativeInteger(usedValue);
+  return { ...(usedTokens !== undefined ? { usedTokens } : {}), maxTokens };
 }
 
 function workflowText(value: unknown) {
@@ -236,6 +256,10 @@ function workflowPresentation(value: unknown) {
         const agent = record(rawAgent);
         const index = numberValue(agent?.index);
         if (!agent || index === undefined) return [];
+        const contextUsage = taskContextUsage(
+          record(agent.usage)?.contextTokens,
+          agent.contextWindow,
+        );
         return [
           {
             index,
@@ -243,6 +267,7 @@ function workflowPresentation(value: unknown) {
             ...(workflowText(agent.state) ? { state: workflowText(agent.state) } : {}),
             ...(workflowText(agent.harness) ? { harness: workflowText(agent.harness) } : {}),
             ...(workflowText(agent.model) ? { model: workflowText(agent.model) } : {}),
+            ...(contextUsage ? { contextUsage } : {}),
             ...(workflowText(agent.phase) ? { phase: workflowText(agent.phase) } : {}),
             ...(workflowText(agent.preview) ? { preview: workflowText(agent.preview) } : {}),
             ...(workflowText(agent.error) ? { error: workflowText(agent.error) } : {}),
@@ -272,6 +297,8 @@ function workflowFingerprint(value: unknown) {
         workflowText(agent.harness) ?? "",
         workflowText(agent.phase) ?? "",
         workflowText(agent.model) ?? "",
+        nonNegativeInteger(record(agent.usage)?.contextTokens) ?? "",
+        positiveInteger(agent.contextWindow) ?? "",
         workflowText(agent.preview) ?? "",
         workflowText(agent.error) ?? "",
       ].join("\u001e"),
@@ -457,6 +484,7 @@ export function makePiAdapter(
           ...(displayTitle ? { title: displayTitle } : {}),
           ...(metadata?.role ? { role: metadata.role } : {}),
           ...(metadata?.model ? { model: metadata.model } : {}),
+          ...(metadata?.contextUsage ? { contextUsage: metadata.contextUsage } : {}),
           ...(metadata?.workflowName ? { workflowName: metadata.workflowName } : {}),
           ...(metadata?.agentIndex !== undefined ? { agentIndex: metadata.agentIndex } : {}),
           ...(metadata?.phaseIndex !== undefined ? { phaseIndex: metadata.phaseIndex } : {}),
@@ -488,12 +516,18 @@ export function makePiAdapter(
         const title = stringValue(details.title) ?? id;
         const role = stringValue(details.harness);
         const model = stringValue(details.model);
+        const rawContextUsage = record(details.contextUsage);
+        const contextUsage = taskContextUsage(
+          rawContextUsage?.usedTokens,
+          rawContextUsage?.maxTokens,
+        );
         ctx.runningTaskIds.add(id);
         ctx.taskTurnIds.set(id, ctx.activeTurnId);
         ctx.taskMetadata.set(id, {
           title,
           ...(role ? { role } : {}),
           ...(model ? { model } : {}),
+          ...(contextUsage ? { contextUsage } : {}),
         });
         yield* publish({
           type: "task.started",
@@ -508,6 +542,7 @@ export function makePiAdapter(
             title,
             role: role ?? "subagent",
             ...(model ? { model } : {}),
+            ...(contextUsage ? { contextUsage } : {}),
             taskType: "subagent",
             agentKind: "agent",
           },
@@ -520,8 +555,46 @@ export function makePiAdapter(
         const entry = record(rawResult);
         const id = stringValue(entry?.id);
         const status = subagentStatus(entry?.status);
-        if (!id || !status || status === "running" || !ctx.runningTaskIds.has(id)) continue;
+        if (!id || !status || !ctx.runningTaskIds.has(id)) continue;
         const title = stringValue(entry?.title);
+        const metadata = ctx.taskMetadata.get(id);
+        const rawContextUsage = record(entry?.contextUsage);
+        const contextUsage = taskContextUsage(
+          rawContextUsage?.usedTokens,
+          rawContextUsage?.maxTokens,
+        );
+        const nextMetadata = metadata
+          ? { ...metadata, ...(contextUsage ? { contextUsage } : {}) }
+          : undefined;
+        if (nextMetadata) ctx.taskMetadata.set(id, nextMetadata);
+        if (status === "running") {
+          if (!nextMetadata?.contextUsage) continue;
+          const fingerprint = `${nextMetadata.contextUsage.usedTokens ?? ""}/${
+            nextMetadata.contextUsage.maxTokens
+          }`;
+          if (ctx.taskFingerprints.get(id) === fingerprint) continue;
+          ctx.taskFingerprints.set(id, fingerprint);
+          yield* publish({
+            type: "task.progress",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: ctx.threadId,
+            turnId: ctx.taskTurnIds.get(id) ?? ctx.activeTurnId,
+            payload: {
+              taskId: RuntimeTaskId.make(`${ctx.taskNamespace}:${id}`),
+              description: title ?? nextMetadata.title,
+              status: "running",
+              title: title ?? nextMetadata.title,
+              ...(nextMetadata.role ? { role: nextMetadata.role } : {}),
+              ...(nextMetadata.model ? { model: nextMetadata.model } : {}),
+              contextUsage: nextMetadata.contextUsage,
+              taskType: "subagent",
+              agentKind: "agent",
+            },
+          });
+          continue;
+        }
         yield* emitTaskCompleted(ctx, { id, ...(title ? { title } : {}), status });
       }
     });
@@ -657,6 +730,8 @@ export function makePiAdapter(
         const title = workflowText(agent.label) ?? `Agent ${index}`;
         const role = workflowText(agent.harness) ?? "workflow";
         const model = workflowText(agent.model);
+        const usage = record(agent.usage);
+        const contextUsage = taskContextUsage(usage?.contextTokens, agent.contextWindow);
         const phaseTitle = workflowText(agent.phase);
         const phaseIndex = phaseTitle
           ? phases.find((phase) => phase.title === phaseTitle)?.index
@@ -665,6 +740,7 @@ export function makePiAdapter(
           title,
           role,
           ...(model ? { model } : {}),
+          ...(contextUsage ? { contextUsage } : {}),
           taskType: "local_agent",
           workflowName,
           agentIndex: index,
@@ -706,6 +782,8 @@ export function makePiAdapter(
             role,
             phaseTitle ?? "",
             model ?? "",
+            contextUsage?.usedTokens ?? "",
+            contextUsage?.maxTokens ?? "",
             preview ?? "",
           ].join("\u001f");
           if (ctx.taskFingerprints.get(id) === fingerprint) continue;
@@ -766,6 +844,43 @@ export function makePiAdapter(
       }
     });
 
+    const emitContextUsage = Effect.fn("PiAdapter.emitContextUsage")(function* (
+      ctx: PiSessionContext,
+    ) {
+      const response = yield* ctx.process.request("get_session_stats").pipe(
+        Effect.map(Option.some),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      if (Option.isNone(response)) return;
+      const data = rpcData(response.value);
+      const contextUsage = record(data?.contextUsage);
+      const usedTokens =
+        contextUsage?.tokens === null ? null : nonNegativeInteger(contextUsage?.tokens);
+      if (usedTokens === undefined) return;
+      const maxTokens = positiveInteger(contextUsage?.contextWindow);
+      const cumulativeTokens = record(data?.tokens);
+      const totalProcessedTokens = nonNegativeInteger(cumulativeTokens?.total);
+      yield* publish({
+        type: "thread.token-usage.updated",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        providerInstanceId: boundInstanceId,
+        threadId: ctx.threadId,
+        turnId: ctx.activeTurnId,
+        payload: {
+          usage: {
+            usedTokens,
+            ...(usedTokens !== null ? { lastUsedTokens: usedTokens } : {}),
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
+            ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
+            ...(ctx.autoCompactionEnabled !== undefined
+              ? { compactsAutomatically: ctx.autoCompactionEnabled }
+              : {}),
+          },
+        },
+      });
+    });
+
     const finalizeSettledTurn = Effect.fn("PiAdapter.finalizeSettledTurn")(function* (
       ctx: PiSessionContext,
     ) {
@@ -795,6 +910,10 @@ export function makePiAdapter(
       const type = stringValue(event.type);
       if (!type) return;
 
+      if (type === "compaction_end") {
+        yield* emitContextUsage(ctx);
+        return;
+      }
       if (type === "agent_start") {
         if (!ctx.activeTurnId) {
           const turnId = TurnId.make(yield* randomUUIDv4);
@@ -813,6 +932,7 @@ export function makePiAdapter(
         return;
       }
       if (type === "agent_settled") {
+        yield* emitContextUsage(ctx);
         yield* finalizeSettledTurn(ctx);
         return;
       }
@@ -885,6 +1005,18 @@ export function makePiAdapter(
           const status = subagentStatus(details?.status);
           if (id && status && status !== "running") {
             const title = stringValue(details?.title);
+            const metadata = ctx.taskMetadata.get(id);
+            if (metadata) {
+              const rawContextUsage = record(details?.contextUsage);
+              const contextUsage = taskContextUsage(
+                rawContextUsage?.usedTokens,
+                rawContextUsage?.maxTokens,
+              );
+              ctx.taskMetadata.set(id, {
+                ...metadata,
+                ...(contextUsage ? { contextUsage } : {}),
+              });
+            }
             yield* emitTaskCompleted(
               ctx,
               { id, ...(title ? { title } : {}), status },
@@ -918,6 +1050,7 @@ export function makePiAdapter(
         const toolCallId = stringValue(event.toolCallId);
         const toolName = stringValue(event.toolName) ?? "tool";
         if (!toolCallId || toolName === "subagent_spawn") return;
+        yield* handleSubagentToolResult(ctx, toolName, event.partialResult);
         const presentation =
           toolName === "workflow" ? workflowPresentation(event.partialResult) : {};
         if (toolName === "workflow") {
@@ -1267,6 +1400,10 @@ export function makePiAdapter(
           taskTurnIds: new Map(),
           taskMetadata: new Map(),
           taskNamespace: sessionId,
+          autoCompactionEnabled:
+            typeof state?.autoCompactionEnabled === "boolean"
+              ? state.autoCompactionEnabled
+              : undefined,
           activeTurnId: undefined,
           syntheticTurn: false,
           activeTurnCompletion: undefined,
@@ -1335,6 +1472,7 @@ export function makePiAdapter(
           threadId: input.threadId,
           payload: { providerThreadId: sessionId },
         });
+        yield* emitContextUsage(ctx);
         return providerSession;
       });
 

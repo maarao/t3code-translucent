@@ -729,6 +729,45 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("treats explicit null context occupancy as a resolvable clearing snapshot", () => {
+      const previous = {
+        id: EventId.make("activity-cw-before-compaction"),
+        tone: "info" as const,
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        payload: { usedTokens: 90_000, maxTokens: 100_000 },
+        turnId: TurnId.make("turn-1"),
+        sequence: 1,
+        createdAt: "2026-04-01T11:00:00.000Z",
+      };
+      const cleared = {
+        ...previous,
+        id: EventId.make("activity-cw-after-compaction"),
+        payload: { usedTokens: null, maxTokens: 100_000 },
+        sequence: 2,
+      };
+
+      const result = applyThreadDetailEvent(
+        { ...baseThread, activities: [previous] },
+        {
+          ...baseEventFields,
+          sequence: 21,
+          occurredAt: "2026-04-01T11:03:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activity-appended",
+          payload: { threadId: ThreadId.make("thread-1"), activity: cleared },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities.map((activity) => activity.id)).toEqual([
+          "activity-cw-after-compaction",
+        ]);
+      }
+    });
+
     it("does not collapse context-window history for a malformed update", () => {
       const resolvable = {
         id: EventId.make("activity-cw-resolvable"),

@@ -91,6 +91,19 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert.equal(taskStarted.payload.title, "reviewer");
       assert.equal(taskStarted.payload.role, "codex");
       assert.equal(taskStarted.payload.taskId, "mock-pi-session:sa-1");
+      assert.deepEqual(taskStarted.payload.contextUsage, {
+        usedTokens: 0,
+        maxTokens: 100_000,
+      });
+      const taskProgress = events.find(
+        (event) =>
+          event.type === "task.progress" && event.payload.taskId === taskStarted.payload.taskId,
+      );
+      assert(taskProgress?.type === "task.progress");
+      assert.deepEqual(taskProgress.payload.contextUsage, {
+        usedTokens: 16_000,
+        maxTokens: 100_000,
+      });
       assert(
         events.some((event) => event.type === "turn.completed" && event.turnId === turn.turnId),
       );
@@ -98,8 +111,21 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert(taskCompleted?.type === "task.completed");
       assert.equal(taskCompleted.payload.taskId, taskStarted.payload.taskId);
       assert.equal(taskCompleted.payload.status, "completed");
+      assert.deepEqual(taskCompleted.payload.contextUsage, {
+        usedTokens: 32_000,
+        maxTokens: 100_000,
+      });
       assert.equal(events.filter((event) => event.type === "turn.started").length, 2);
       assert.equal(events.filter((event) => event.type === "turn.completed").length, 2);
+      const contextUsage = events.findLast((event) => event.type === "thread.token-usage.updated");
+      assert(contextUsage?.type === "thread.token-usage.updated");
+      assert.deepEqual(contextUsage.payload.usage, {
+        usedTokens: 24_000,
+        lastUsedTokens: 24_000,
+        maxTokens: 100_000,
+        totalProcessedTokens: 10_000,
+        compactsAutomatically: true,
+      });
     }).pipe(Effect.scoped),
   );
 
@@ -162,6 +188,10 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert.equal(child.payload.phaseIndex, 0);
       assert.equal(child.payload.parentAgentId, coordinator.payload.taskId);
       assert.equal(child.payload.timelineBypass, true);
+      assert.deepEqual(child.payload.contextUsage, {
+        usedTokens: 24_000,
+        maxTokens: 100_000,
+      });
 
       const taskProgress = events.filter((event) => event.type === "task.progress");
       assert.equal(taskProgress.length, 2);
@@ -170,6 +200,10 @@ it.layer(testLayer)("PiAdapter", (it) => {
       );
       assert(childProgress?.type === "task.progress");
       assert.equal(childProgress.payload.summary, "Inspecting adapter");
+      assert.deepEqual(childProgress.payload.contextUsage, {
+        usedTokens: 24_000,
+        maxTokens: 100_000,
+      });
 
       const completions = events.filter((event) => event.type === "task.completed");
       assert.equal(completions.length, 2);
@@ -180,6 +214,14 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert.equal(coordinatorCompletion.payload.status, "completed");
       assert.equal(coordinatorCompletion.payload.phaseTitle, "Report");
       assert.equal(coordinatorCompletion.payload.phaseIndex, 1);
+      const childCompletion = completions.find(
+        (event) => event.payload.taskId === child.payload.taskId,
+      );
+      assert(childCompletion?.type === "task.completed");
+      assert.deepEqual(childCompletion.payload.contextUsage, {
+        usedTokens: 28_000,
+        maxTokens: 100_000,
+      });
       assert(
         completions.some(
           (event) =>

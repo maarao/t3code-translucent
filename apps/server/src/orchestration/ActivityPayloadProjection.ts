@@ -321,9 +321,9 @@ export function projectActivityPayload(
 
 /**
  * Matches the validity rule in the web client's
- * `deriveLatestContextWindowSnapshot`: rows without a finite, non-negative
- * `usedTokens` are skipped during its backward walk, so they must not shadow
- * an earlier resolvable row here.
+ * `deriveLatestContextWindowSnapshot`: finite non-negative and explicit null
+ * `usedTokens` are resolvable. Null clears stale pre-compaction occupancy and
+ * must shadow an earlier numeric row.
  */
 function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
   if (activity.kind !== "context-window.updated") {
@@ -331,7 +331,10 @@ function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity
   }
   const payload = asRecord(activity.payload);
   const usedTokens = payload?.usedTokens;
-  return typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0;
+  return (
+    usedTokens === null ||
+    (typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0)
+  );
 }
 
 /**

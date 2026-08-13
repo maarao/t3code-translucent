@@ -18,6 +18,7 @@ import type {
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  formatSubagentContextRemaining,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -145,8 +146,10 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
       ? null
       : agent.role;
+  const contextRemaining = formatSubagentContextRemaining(agent.contextUsage);
   const metadata = [
     modelLabel,
+    contextRemaining,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,

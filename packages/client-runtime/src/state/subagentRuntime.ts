@@ -29,6 +29,11 @@ export type RuntimeSubagentStatus =
   | "cancelled"
   | "interrupted";
 
+export interface SubagentContextUsage {
+  readonly usedTokens: number | null;
+  readonly maxTokens: number;
+}
+
 export interface SubagentUsage {
   readonly totalTokens: number;
   readonly inputTokens?: number;
@@ -66,6 +71,7 @@ export interface RuntimeSubagent {
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
+  readonly contextUsage: SubagentContextUsage | null;
   readonly progress: string | null;
   readonly lastToolName: string | null;
   readonly result: string | null;
@@ -235,6 +241,7 @@ interface MutableAgent {
   status: RuntimeSubagentStatus;
   activationCount: number;
   usage: SubagentUsage | null;
+  contextUsage: SubagentContextUsage | null;
   progress: string | null;
   lastToolName: string | null;
   result: string | null;
@@ -289,6 +296,7 @@ function getOrCreate(
     status: "pending",
     activationCount: 0,
     usage: null,
+    contextUsage: null,
     progress: null,
     lastToolName: null,
     result: null,
@@ -322,6 +330,14 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (model) agent.model = model;
   const effort = asString(payload.effort);
   if (effort) agent.effort = effort;
+  if (typeof payload.contextUsage === "object" && payload.contextUsage !== null) {
+    const contextUsage = payload.contextUsage as Record<string, unknown>;
+    const maxTokens = asCount(contextUsage.maxTokens);
+    const usedTokens = asCount(contextUsage.usedTokens);
+    if (maxTokens !== undefined && maxTokens > 0) {
+      agent.contextUsage = { usedTokens: usedTokens ?? null, maxTokens };
+    }
+  }
   const parentAgentId = asString(payload.parentAgentId);
   if (parentAgentId) {
     agent.parentAgentId = parentAgentId;
@@ -401,7 +417,8 @@ function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: str
   }
   if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
     // Reactivation: same identity, new run. Clear the previous run's terminal
-    // detail so a live card never shows the prior run's output.
+    // detail so a live card never shows the prior run's output. Metadata from
+    // the current event is already filled, so retain a fresh context snapshot.
     agent.activationCount += 1;
     agent.result = null;
     agent.error = null;
@@ -932,6 +949,15 @@ export function formatSubagentModelLabel(
     .replace(/-\d{8}$/, "")
     .replace(/-latest$/, "");
   return effort ? `${compact} · ${effort}` : compact;
+}
+
+export function formatSubagentContextRemaining(contextUsage: SubagentContextUsage | null) {
+  if (!contextUsage) return null;
+  if (contextUsage.usedTokens === null) {
+    return `${formatSubagentTokenCount(contextUsage.maxTokens)} ctx`;
+  }
+  const remaining = Math.max(0, contextUsage.maxTokens - contextUsage.usedTokens);
+  return `${formatSubagentTokenCount(remaining)} ctx left`;
 }
 
 export function formatSubagentTokenCount(totalTokens: number): string {

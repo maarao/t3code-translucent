@@ -64,6 +64,12 @@ function handle(request: Record<string, unknown>) {
     case "get_available_models":
       respond(request, { models: [] });
       return;
+    case "get_session_stats":
+      respond(request, {
+        tokens: { input: 9000, output: 1000, cacheRead: 0, cacheWrite: 0, total: 10000 },
+        contextUsage: { tokens: 24000, contextWindow: 100000, percent: 24 },
+      });
+      return;
     case "set_model":
     case "set_thinking_level":
     case "abort":
@@ -102,7 +108,57 @@ function handle(request: Record<string, unknown>) {
           toolName: "subagent_spawn",
           result: {
             content: [{ type: "text", text: "Spawned sa-1" }],
-            details: { id: "sa-1", title: "reviewer", harness: "codex", model: "gpt-test" },
+            details: {
+              id: "sa-1",
+              title: "reviewer",
+              harness: "codex",
+              model: "gpt-test",
+              contextUsage: { usedTokens: 0, maxTokens: 100000 },
+            },
+          },
+          isError: false,
+        });
+        send({
+          type: "tool_execution_start",
+          toolCallId: "wait-tool",
+          toolName: "subagent_wait",
+          args: { ids: ["sa-1"] },
+        });
+        send({
+          type: "tool_execution_update",
+          toolCallId: "wait-tool",
+          toolName: "subagent_wait",
+          partialResult: {
+            content: [{ type: "text", text: "Waiting for sa-1..." }],
+            details: {
+              pending: ["sa-1"],
+              results: [
+                {
+                  id: "sa-1",
+                  title: "reviewer",
+                  status: "running",
+                  contextUsage: { usedTokens: 16000, maxTokens: 100000 },
+                },
+              ],
+            },
+          },
+        });
+        send({
+          type: "tool_execution_end",
+          toolCallId: "wait-tool",
+          toolName: "subagent_wait",
+          result: {
+            content: [{ type: "text", text: "Still running" }],
+            details: {
+              results: [
+                {
+                  id: "sa-1",
+                  title: "reviewer",
+                  status: "running",
+                  contextUsage: { usedTokens: 16000, maxTokens: 100000 },
+                },
+              ],
+            },
           },
           isError: false,
         });
@@ -157,9 +213,10 @@ function handle(request: Record<string, unknown>) {
                   state: "running",
                   harness: "codex",
                   model: "gpt-test",
+                  contextWindow: 100000,
                   startedAt: 2,
                   preview: "Inspecting adapter",
-                  usage,
+                  usage: { ...usage, contextTokens: 24000 },
                   transcript: [],
                 },
               ],
@@ -196,10 +253,11 @@ function handle(request: Record<string, unknown>) {
                     state: "done",
                     harness: "codex",
                     model: "gpt-test",
+                    contextWindow: 100000,
                     startedAt: 2,
                     finishedAt: 3,
                     preview: "Review complete",
-                    usage,
+                    usage: { ...usage, contextTokens: 28000 },
                     transcript: [],
                   },
                 ],
@@ -219,7 +277,12 @@ function handle(request: Record<string, unknown>) {
             role: "custom",
             customType: "subagent-result",
             content: "review complete",
-            details: { id: "sa-1", title: "reviewer", status: "done" },
+            details: {
+              id: "sa-1",
+              title: "reviewer",
+              status: "done",
+              contextUsage: { usedTokens: 32000, maxTokens: 100000 },
+            },
           };
           send({ type: "message_start", message: resultMessage });
           send({ type: "message_end", message: resultMessage });

@@ -308,7 +308,8 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
 
 export const ThreadTokenUsageSnapshot = Schema.Struct({
-  usedTokens: NonNegativeInt,
+  /** Null immediately after compaction until a fresh assistant response provides occupancy. */
+  usedTokens: Schema.NullOr(NonNegativeInt),
   totalProcessedTokens: Schema.optional(NonNegativeInt),
   maxTokens: Schema.optional(PositiveInt),
   inputTokens: Schema.optional(NonNegativeInt),
@@ -544,6 +545,12 @@ export function classifyTaskAgentKind(input: {
  * reconstruct an agent even when its start row aged out of activity retention.
  * All fields optional: old emitters and old rows decode unchanged.
  */
+export const RuntimeTaskContextUsage = Schema.Struct({
+  usedTokens: Schema.optional(NonNegativeInt),
+  maxTokens: PositiveInt,
+});
+export type RuntimeTaskContextUsage = typeof RuntimeTaskContextUsage.Type;
+
 const taskAgentLinkageFields = {
   /** SDK task_type (subagent/shell/monitor/local_workflow/…), repeated on
    * every row so folds can classify without the start row. */
@@ -565,6 +572,8 @@ const taskAgentLinkageFields = {
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Current occupancy and capacity, distinct from cumulative token billing. */
+  contextUsage: Schema.optional(RuntimeTaskContextUsage),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
   parentAgentId: Schema.optional(TrimmedNonEmptyStringSchema),
   workflowName: Schema.optional(TrimmedNonEmptyStringSchema),

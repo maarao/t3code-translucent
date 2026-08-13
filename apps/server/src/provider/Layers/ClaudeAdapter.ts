@@ -584,7 +584,7 @@ function normalizeClaudeTaskProgressTokenUsage(
     return undefined;
   }
 
-  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens;
+  const lastUsedTokens = context.lastKnownTokenUsage?.usedTokens ?? undefined;
   const activeTokens =
     lastUsedTokens !== undefined ? Math.max(totalTokens, lastUsedTokens) : totalTokens;
   if (lastUsedTokens !== undefined && activeTokens === lastUsedTokens) {
@@ -2218,7 +2218,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               : {}),
             ...(typeof accumulatedTotalProcessedTokens === "number" &&
             Number.isFinite(accumulatedTotalProcessedTokens) &&
-            accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
+            (lastGoodUsage.usedTokens === null ||
+              accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens)
               ? {
                   totalProcessedTokens: accumulatedTotalProcessedTokens,
                 }
@@ -2233,7 +2234,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               : {}),
             ...(typeof accumulatedTotalProcessedTokens === "number" &&
             Number.isFinite(accumulatedTotalProcessedTokens) &&
-            accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
+            (lastGoodUsage.usedTokens === null ||
+              accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens)
               ? {
                   totalProcessedTokens: accumulatedTotalProcessedTokens,
                 }
