@@ -583,6 +583,9 @@ export function makePiAdapter(
         return state === "done" || state === "error";
       }).length;
       const currentPhase = workflowText(details.currentPhase);
+      const currentPhaseIndex = currentPhase
+        ? phases.find((phase) => phase.title === currentPhase)?.index
+        : undefined;
       const coordinatorSummary = `${completedAgents}/${visibleAgents.length} agents${
         currentPhase ? ` · ${currentPhase}` : ""
       }`;
@@ -591,6 +594,8 @@ export function makePiAdapter(
         role: "workflow",
         taskType: "local_workflow",
         workflowName,
+        ...(currentPhaseIndex !== undefined ? { phaseIndex: currentPhaseIndex } : {}),
+        ...(currentPhase ? { phaseTitle: currentPhase } : {}),
         ...(phases.length > 0 ? { phases } : {}),
         runHandles: { runId },
       };
@@ -600,6 +605,7 @@ export function makePiAdapter(
         workflowStatus === "failed" ||
         workflowStatus === "aborted";
       if (!ctx.settledTaskIds.has(coordinatorId)) {
+        ctx.taskMetadata.set(coordinatorId, coordinatorMetadata);
         if (!ctx.runningTaskIds.has(coordinatorId)) {
           ctx.runningTaskIds.add(coordinatorId);
           ctx.taskTurnIds.set(coordinatorId, ctx.activeTurnId);
@@ -646,7 +652,7 @@ export function makePiAdapter(
         const state = workflowText(agent?.state);
         if (!agent || index === undefined || !Number.isInteger(index) || index < 0 || !state)
           continue;
-        const id = `workflow:${runId}:${index}`;
+        const id = `workflow:${runId}:wf:${index}`;
         if (ctx.settledTaskIds.has(id)) continue;
         const title = workflowText(agent.label) ?? `Agent ${index}`;
         const role = workflowText(agent.harness) ?? "workflow";

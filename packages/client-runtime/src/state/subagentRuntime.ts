@@ -792,9 +792,15 @@ export function deriveAgentPanelModel({
       const settledCount = phaseMembers.filter((member) =>
         isTerminalSubagentStatus(member.status),
       ).length;
+      const emptyPhaseState = (() => {
+        if (workflow.phaseIndex === null) return "pending" as const;
+        if (phase.index < workflow.phaseIndex) return "done" as const;
+        if (phase.index > workflow.phaseIndex) return "pending" as const;
+        return isTerminalSubagentStatus(workflow.status) ? ("done" as const) : ("running" as const);
+      })();
       const state: "pending" | "running" | "done" =
         phaseMembers.length === 0
-          ? "pending"
+          ? emptyPhaseState
           : activeCount > 0
             ? "running"
             : settledCount === phaseMembers.length

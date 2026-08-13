@@ -148,9 +148,11 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert.equal(coordinator.payload.taskType, "local_workflow");
       assert.equal(coordinator.payload.workflowName, "Mock workflow");
       assert.equal(coordinator.payload.runHandles?.runId, "wf-mock");
+      assert.equal(coordinator.payload.phaseTitle, "Review");
+      assert.equal(coordinator.payload.phaseIndex, 0);
 
       const child = taskStarts.find(
-        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock:1",
+        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock:wf:1",
       );
       assert(child?.type === "task.started");
       assert.equal(child.payload.role, "codex");
@@ -171,13 +173,13 @@ it.layer(testLayer)("PiAdapter", (it) => {
 
       const completions = events.filter((event) => event.type === "task.completed");
       assert.equal(completions.length, 2);
-      assert(
-        completions.some(
-          (event) =>
-            event.payload.taskId === coordinator.payload.taskId &&
-            event.payload.status === "completed",
-        ),
+      const coordinatorCompletion = completions.find(
+        (event) => event.payload.taskId === coordinator.payload.taskId,
       );
+      assert(coordinatorCompletion?.type === "task.completed");
+      assert.equal(coordinatorCompletion.payload.status, "completed");
+      assert.equal(coordinatorCompletion.payload.phaseTitle, "Report");
+      assert.equal(coordinatorCompletion.payload.phaseIndex, 1);
       assert(
         completions.some(
           (event) =>

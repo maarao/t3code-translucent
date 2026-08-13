@@ -380,6 +380,49 @@ describe("deriveAgentPanelModel", () => {
     expect(model.directAgents.map((agent) => agent.id)).toEqual(["direct-1"]);
   });
 
+  it("shows an active empty phase and completes it with the coordinator", () => {
+    const events = [
+      activity("task.started", {
+        taskId: "wf-empty",
+        taskType: "local_workflow",
+        phases: [
+          { index: 0, title: "Review" },
+          { index: 1, title: "Synthesis" },
+        ],
+        phaseIndex: 1,
+        phaseTitle: "Synthesis",
+      }),
+      activity("task.progress", {
+        taskId: "wf-empty:wf:0",
+        parentAgentId: "wf-empty",
+        status: "completed",
+        phaseIndex: 0,
+      }),
+    ];
+    const runningRoster = fold(events);
+    expect(deriveAgentPanelModel({ agents: runningRoster }).workflows[0]!.phases).toMatchObject([
+      { title: "Review", state: "done" },
+      { title: "Synthesis", state: "running" },
+    ]);
+
+    const completedRoster = fold([
+      ...events,
+      activity("task.completed", {
+        taskId: "wf-empty",
+        taskType: "local_workflow",
+        status: "completed",
+        phases: [
+          { index: 0, title: "Review" },
+          { index: 1, title: "Synthesis" },
+        ],
+        phaseIndex: 1,
+      }),
+    ]);
+    expect(deriveAgentPanelModel({ agents: completedRoster }).workflows[0]!.phases[1]!.state).toBe(
+      "done",
+    );
+  });
+
   it("counts idle deliberately and waiting as active", () => {
     const model = deriveAgentPanelModel({ agents: roster });
     expect(model.idleCount).toBe(1);
