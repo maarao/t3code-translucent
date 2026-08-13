@@ -1631,6 +1631,55 @@ body {
   background-size: var(--surface-grain-size);
 }
 
+/* Electron's main BrowserWindow is transparent, allowing the native macOS
+   vibrancy layer (and transparent-window compositing on other platforms) to
+   show through the app chrome. Keep the blur on isolated pseudo-elements:
+   applying backdrop-filter to text-bearing surfaces makes glyphs blurry in
+   Chromium when the window itself is translucent. */
+html.electron,
+html.electron body {
+  background-color: transparent;
+}
+
+html.electron [data-slot="sidebar-wrapper"] {
+  background-color: color-mix(in srgb, var(--sidebar) var(--glass-opacity), transparent);
+}
+
+html.electron [data-slot="sidebar-inner"] {
+  background-color: color-mix(in srgb, var(--sidebar) var(--glass-opacity), transparent);
+}
+
+html.electron [data-slot="sidebar-inset"],
+html.electron .thread-terminal-drawer,
+html.electron [data-slot="sidebar-inset"] .bg-background {
+  background-color: color-mix(in srgb, var(--background) var(--glass-opacity), transparent);
+}
+
+html.electron [data-slot="sidebar-container"],
+html.electron [data-slot="sidebar-inset"],
+html.electron .thread-terminal-drawer {
+  isolation: isolate;
+}
+
+html.electron [data-slot="sidebar-container"]::before,
+html.electron [data-slot="sidebar-inset"]::before,
+html.electron .thread-terminal-drawer::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  content: "";
+  -webkit-backdrop-filter: blur(22px) saturate(var(--glass-saturation));
+  backdrop-filter: blur(22px) saturate(var(--glass-saturation));
+}
+
+html.electron [data-slot="sidebar-container"] > *,
+html.electron [data-slot="sidebar-inset"] > *,
+html.electron .thread-terminal-drawer > * {
+  z-index: 1;
+}
+
 pre,
 code {
   font-family: var(--font-mono);

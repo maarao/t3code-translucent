@@ -2,6 +2,7 @@ import type { DesktopBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { isElectron } from "../env";
 import {
   applyThemePalette,
   CUSTOM_THEMES_STORAGE_KEY,
@@ -253,8 +254,19 @@ function resolveBrowserChromeSurface(): HTMLElement {
   );
 }
 
+function clearBrowserChromeTheme() {
+  document.documentElement.style.removeProperty("background-color");
+  document.body?.style.removeProperty("background-color");
+  document.querySelector<HTMLMetaElement>(DYNAMIC_THEME_COLOR_SELECTOR)?.remove();
+}
+
 export function syncBrowserChromeTheme() {
   if (typeof document === "undefined" || typeof getComputedStyle === "undefined") return;
+  if (isElectron) {
+    clearBrowserChromeTheme();
+    return;
+  }
+
   const rootStyles = getComputedStyle(document.documentElement);
   const themeChromeColor = document.documentElement.dataset.themeId
     ? normalizeThemeColor(rootStyles.getPropertyValue("--app-chrome-background"))
