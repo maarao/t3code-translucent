@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import * as Option from "effect/Option";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
 import {
+  consumeThreadForkNavigation,
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
@@ -194,6 +195,27 @@ function ThreadRouteContent(
     useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const threadForkNavigationTarget = useMemo(
+    () =>
+      selectedThread === null
+        ? null
+        : consumeThreadForkNavigation({
+            environmentId: selectedThread.environmentId,
+            threadId: selectedThread.id,
+            activities: selectedThreadDetail?.activities ?? [],
+          }),
+    [selectedThread, selectedThreadDetail?.activities],
+  );
+  const navigation = useNavigation();
+  useEffect(() => {
+    if (selectedThread === null || threadForkNavigationTarget === null) return;
+    navigation.dispatch(
+      StackActions.replace("Thread", {
+        environmentId: String(selectedThread.environmentId),
+        threadId: String(threadForkNavigationTarget.destinationThreadId),
+      }),
+    );
+  }, [navigation, selectedThread, threadForkNavigationTarget]);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -214,7 +236,6 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
-  const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;

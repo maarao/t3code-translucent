@@ -1024,6 +1024,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getInstanceInfo: ProviderServiceMethod<"getInstanceInfo"> = (instanceId) =>
     registry.getInstanceInfo(instanceId);
 
+  const getRuntimeBinding: ProviderServiceMethod<"getRuntimeBinding"> = (threadId) =>
+    directory.getBinding(threadId).pipe(Effect.map(Option.getOrUndefined));
+
+  const registerDormantSession: ProviderServiceMethod<"registerDormantSession"> = (binding) =>
+    directory.upsert(binding);
+
   const rollbackConversation: ProviderServiceMethod<"rollbackConversation"> = Effect.fn(
     "rollbackConversation",
   )(function* (rawInput) {
@@ -1135,6 +1141,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     listSessions,
     getCapabilities,
     getInstanceInfo,
+    getRuntimeBinding,
+    registerDormantSession,
     rollbackConversation,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

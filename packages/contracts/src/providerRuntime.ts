@@ -154,6 +154,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.started",
   "thread.state.changed",
   "thread.metadata.updated",
+  "thread.forked",
   "thread.token-usage.updated",
   "thread.realtime.started",
   "thread.realtime.item-added",
@@ -205,6 +206,7 @@ const SessionExitedType = Schema.Literal("session.exited");
 const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
 const ThreadMetadataUpdatedType = Schema.Literal("thread.metadata.updated");
+const ThreadForkedType = Schema.Literal("thread.forked");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
@@ -306,6 +308,12 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
   metadata: Schema.optional(UnknownRecordSchema),
 });
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
+
+const ThreadForkedPayload = Schema.Struct({
+  destinationThreadId: ThreadId,
+  resume: Schema.Unknown,
+});
+export type ThreadForkedPayload = typeof ThreadForkedPayload.Type;
 
 export const ThreadTokenUsageSnapshot = Schema.Struct({
   /** Null immediately after compaction until a fresh assistant response provides occupancy. */
@@ -839,6 +847,13 @@ const ProviderRuntimeThreadMetadataUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeThreadMetadataUpdatedEvent =
   typeof ProviderRuntimeThreadMetadataUpdatedEvent.Type;
 
+const ProviderRuntimeThreadForkedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadForkedType,
+  payload: ThreadForkedPayload,
+});
+export type ProviderRuntimeThreadForkedEvent = typeof ProviderRuntimeThreadForkedEvent.Type;
+
 const ProviderRuntimeThreadTokenUsageUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ThreadTokenUsageUpdatedType,
@@ -1154,6 +1169,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadStartedEvent,
   ProviderRuntimeThreadStateChangedEvent,
   ProviderRuntimeThreadMetadataUpdatedEvent,
+  ProviderRuntimeThreadForkedEvent,
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,

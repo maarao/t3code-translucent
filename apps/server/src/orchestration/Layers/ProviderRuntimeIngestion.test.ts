@@ -41,6 +41,7 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import type { ProviderRuntimeBinding } from "../../provider/Services/ProviderSessionDirectory.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -99,6 +100,7 @@ function isLegacyTurnCompletedEvent(
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  const runtimeBindings = new Map<ThreadId, ProviderRuntimeBinding>();
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
@@ -123,6 +125,11 @@ function createProviderServiceHarness() {
         },
       });
     },
+    getRuntimeBinding: (threadId) => Effect.succeed(runtimeBindings.get(threadId)),
+    registerDormantSession: (binding) =>
+      Effect.sync(() => {
+        runtimeBindings.set(binding.threadId, binding);
+      }),
     rollbackConversation: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -161,6 +168,7 @@ function createProviderServiceHarness() {
     service,
     emit,
     setSession,
+    getBinding: (threadId: ThreadId) => runtimeBindings.get(threadId),
   };
 }
 
@@ -305,12 +313,33 @@ describe("ProviderRuntimeIngestion", () => {
     });
     provider.setSession({
       provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
       status: "ready",
       runtimeMode: "approval-required",
       threadId: ThreadId.make("thread-1"),
       createdAt,
       updatedAt: createdAt,
     });
+    await Effect.runPromise(
+      provider.service.registerDormantSession!({
+        threadId: ThreadId.make("thread-1"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        adapterKey: "codex",
+        status: "running",
+        resumeCursor: { threadId: "provider-thread-source" },
+        runtimePayload: {
+          cwd: workspaceRoot,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          activeTurnId: "source-turn",
+          lastRuntimeEvent: "source-running",
+        },
+        runtimeMode: "approval-required",
+      }),
+    );
 
     return {
       engine,
@@ -318,6 +347,7 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      getProviderBinding: provider.getBinding,
       drain,
     };
   }
@@ -362,6 +392,72 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("creates a new thread and durable provider binding from a provider fork", async () => {
+    const harness = await createHarness();
+    const destinationThreadId = asThreadId("thread-pi-fork");
+    const resume = {
+      schemaVersion: 1,
+      sessionId: "pi-fork-session",
+      sessionFile: "/tmp/pi-fork-session.jsonl",
+      leafId: "fork-leaf",
+    };
+
+    harness.emit({
+      type: "thread.forked",
+      eventId: asEventId("evt-thread-pi-forked"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-tree"),
+      payload: { destinationThreadId, resume },
+    });
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const destination = snapshot.threads.find((thread) => thread.id === destinationThreadId);
+    expect(destination).toMatchObject({
+      id: destinationThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Fork of Thread",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      session: null,
+    });
+    expect(harness.getProviderBinding(destinationThreadId)).toMatchObject({
+      threadId: destinationThreadId,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped",
+      resumeCursor: resume,
+      runtimeMode: "approval-required",
+      runtimePayload: {
+        cwd: expect.any(String),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+      },
+    });
+
+    const source = snapshot.threads.find((thread) => thread.id === asThreadId("thread-1"));
+    expect(source?.activities).toContainEqual(
+      expect.objectContaining({
+        id: asEventId("evt-thread-pi-forked"),
+        kind: "thread.forked",
+        summary: "Forked history into a new thread",
+        payload: { destinationThreadId },
+        turnId: asTurnId("turn-tree"),
+      }),
+    );
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

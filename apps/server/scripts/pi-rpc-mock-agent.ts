@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 let buffer = "";
 let promptCount = 0;
 let compacted = false;
+let treeForked = false;
 const requestLogPath = process.env.T3_PI_RPC_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_PI_RPC_EXIT_LOG_PATH;
 
@@ -37,8 +38,8 @@ function handle(request: Record<string, unknown>) {
   switch (request.type) {
     case "get_state":
       respond(request, {
-        sessionId: "mock-pi-session",
-        sessionFile: "/tmp/mock-pi-session.jsonl",
+        sessionId: treeForked ? "mock-pi-tree-fork" : "mock-pi-session",
+        sessionFile: treeForked ? "/tmp/mock-pi-tree-fork.jsonl" : "/tmp/mock-pi-session.jsonl",
         thinkingLevel: "high",
         isStreaming: false,
         isCompacting: false,
@@ -59,7 +60,7 @@ function handle(request: Record<string, unknown>) {
             message: { role: "user", content: String(request.message ?? "prompt") },
           },
         ],
-        leafId: `leaf-${promptCount}`,
+        leafId: treeForked ? "leaf-tree-fork" : `leaf-${promptCount}`,
       });
       return;
     case "get_available_models":
@@ -67,8 +68,8 @@ function handle(request: Record<string, unknown>) {
       return;
     case "get_commands":
       respond(request, {
-        commands:
-          process.env.T3_PI_RPC_DISABLE_RELOAD === "1"
+        commands: [
+          ...(process.env.T3_PI_RPC_DISABLE_RELOAD === "1"
             ? []
             : [
                 {
@@ -76,7 +77,17 @@ function handle(request: Record<string, unknown>) {
                   description: "Reload Pi resources",
                   source: "extension",
                 },
-              ],
+              ]),
+          ...(process.env.T3_PI_RPC_DISABLE_TREE_FORK === "1"
+            ? []
+            : [
+                {
+                  name: "t3-tree-fork",
+                  description: "Fork Pi history for T3",
+                  source: "extension",
+                },
+              ]),
+        ],
       });
       return;
     case "get_session_stats":
@@ -125,6 +136,11 @@ function handle(request: Record<string, unknown>) {
       return;
     case "prompt": {
       if (request.message === "/reload") {
+        respond(request);
+        return;
+      }
+      if (request.message === "/t3-tree-fork") {
+        treeForked = true;
         respond(request);
         return;
       }

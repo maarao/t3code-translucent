@@ -30,6 +30,7 @@ import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type { ProviderRuntimeBinding } from "./ProviderSessionDirectory.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -96,6 +97,14 @@ export interface ProviderServiceShape {
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderInstanceRoutingInfo, ProviderServiceError>;
+
+  readonly getRuntimeBinding?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderRuntimeBinding | undefined, ProviderServiceError>;
+
+  readonly registerDormantSession?: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Roll back provider conversation state by a number of turns.

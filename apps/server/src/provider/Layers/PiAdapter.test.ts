@@ -135,7 +135,7 @@ it.layer(testLayer)("PiAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("runs Pi compact and extension-backed reload commands without an agent turn", () =>
+  it.effect("runs Pi compact, reload, and tree-fork commands without an agent turn", () =>
     Effect.gen(function* () {
       const logDir = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-rpc-command-")),
@@ -163,6 +163,7 @@ it.layer(testLayer)("PiAdapter", (it) => {
         input: "/compact Focus on the implementation",
       });
       const reloadTurn = yield* adapter.sendTurn({ threadId, input: "/reload" });
+      const treeTurn = yield* adapter.sendTurn({ threadId, input: "/tree" });
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)));
       yield* Fiber.interrupt(eventFiber);
 
@@ -180,7 +181,18 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert(
         requests.some((request) => request.type === "prompt" && request.message === "/reload"),
       );
-      assert.equal(events.filter((event) => event.type === "turn.started").length, 2);
+      assert(
+        requests.some(
+          (request) => request.type === "prompt" && request.message === "/t3-tree-fork",
+        ),
+      );
+      assert.deepEqual(treeTurn.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "mock-pi-session",
+        sessionFile: "/tmp/mock-pi-session.jsonl",
+        leafId: "leaf-0",
+      });
+      assert.equal(events.filter((event) => event.type === "turn.started").length, 3);
       assert(
         events.some(
           (event) => event.type === "turn.completed" && event.turnId === compactTurn.turnId,
@@ -190,6 +202,20 @@ it.layer(testLayer)("PiAdapter", (it) => {
         events.some(
           (event) => event.type === "turn.completed" && event.turnId === reloadTurn.turnId,
         ),
+      );
+      assert(
+        events.some(
+          (event) =>
+            event.type === "thread.forked" &&
+            event.turnId === treeTurn.turnId &&
+            event.payload.resume &&
+            typeof event.payload.resume === "object" &&
+            "sessionId" in event.payload.resume &&
+            event.payload.resume.sessionId === "mock-pi-tree-fork",
+        ),
+      );
+      assert(
+        events.some((event) => event.type === "turn.completed" && event.turnId === treeTurn.turnId),
       );
       assert(
         events.some(
@@ -208,14 +234,18 @@ it.layer(testLayer)("PiAdapter", (it) => {
             event.payload.status === "completed",
         ),
       );
-      const contextUsage = events.findLast((event) => event.type === "thread.token-usage.updated");
+      const contextUsage = events.find(
+        (event) =>
+          event.type === "thread.token-usage.updated" && event.payload.usage.usedTokens === null,
+      );
       assert(contextUsage?.type === "thread.token-usage.updated");
-      assert.equal(contextUsage.payload.usage.usedTokens, null);
       assert.equal(
         events.some(
           (event) =>
             event.type === "content.delta" &&
-            (event.turnId === compactTurn.turnId || event.turnId === reloadTurn.turnId),
+            (event.turnId === compactTurn.turnId ||
+              event.turnId === reloadTurn.turnId ||
+              event.turnId === treeTurn.turnId),
         ),
         false,
       );
@@ -238,6 +268,25 @@ it.layer(testLayer)("PiAdapter", (it) => {
 
       const failure = yield* Effect.flip(adapter.sendTurn({ threadId, input: "/reload" }));
       assert.match(failure.message, /reload extension command/u);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects tree when Pi does not expose the T3 fork bridge", () =>
+    Effect.gen(function* () {
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({ T3_PI_RPC_DISABLE_TREE_FORK: "1" }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const threadId = ThreadId.make("pi-rpc-missing-tree-fork-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const failure = yield* Effect.flip(adapter.sendTurn({ threadId, input: "/tree" }));
+      assert.match(failure.message, /tree-fork bridge extension/u);
     }).pipe(Effect.scoped),
   );
 

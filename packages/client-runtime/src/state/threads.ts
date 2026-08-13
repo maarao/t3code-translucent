@@ -29,6 +29,12 @@ import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+export {
+  armThreadForkNavigation,
+  consumeThreadForkNavigation,
+  latestThreadForkNavigationTarget,
+} from "./threadForkNavigation.ts";
+
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadPageState,

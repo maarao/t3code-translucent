@@ -45,6 +45,10 @@ const PI_SLASH_COMMANDS = [
     name: "reload",
     description: "Reload Pi extensions, skills, prompts, themes, and context files",
   },
+  {
+    name: "tree",
+    description: "Fork a Pi history point into a new T3 thread",
+  },
 ] as const;
 
 function titleCase(value: string): string {

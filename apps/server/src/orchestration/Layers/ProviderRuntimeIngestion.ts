@@ -45,6 +45,15 @@ import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
+
+function durableForkRuntimePayload(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  return {
+    ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+    ...(payload.modelSelection !== undefined ? { modelSelection: payload.modelSelection } : {}),
+  };
+}
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
 
 // Fallback when the in-memory description cache no longer has the task name
@@ -417,6 +426,23 @@ export function runtimeEventToActivities(
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "thread.forked": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "thread.forked",
+          summary: "Forked history into a new thread",
+          payload: {
+            destinationThreadId: event.payload.destinationThreadId,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1890,6 +1916,45 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      if (event.type === "thread.forked") {
+        const sourceBinding = yield* providerService.getRuntimeBinding!(thread.id);
+        const providerInstanceId =
+          event.providerInstanceId ??
+          sourceBinding?.providerInstanceId ??
+          thread.session?.providerInstanceId;
+        if (providerInstanceId === undefined) {
+          return yield* Effect.logWarning("provider-created thread fork has no provider instance", {
+            eventId: event.eventId,
+            sourceThreadId: thread.id,
+            destinationThreadId: event.payload.destinationThreadId,
+          });
+        }
+
+        yield* orchestrationEngine.dispatch({
+          type: "thread.create",
+          commandId: yield* providerCommandId(event, "thread-fork-create"),
+          threadId: event.payload.destinationThreadId,
+          projectId: thread.projectId,
+          title: `Fork of ${thread.title}`,
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          branch: thread.branch,
+          worktreePath: thread.worktreePath,
+          createdAt: now,
+        });
+        yield* providerService.registerDormantSession!({
+          threadId: event.payload.destinationThreadId,
+          provider: event.provider,
+          providerInstanceId,
+          adapterKey: sourceBinding?.adapterKey ?? event.provider,
+          status: "stopped",
+          resumeCursor: event.payload.resume,
+          runtimePayload: durableForkRuntimePayload(sourceBinding?.runtimePayload),
+          runtimeMode: sourceBinding?.runtimeMode ?? thread.runtimeMode,
+        });
       }
 
       if (event.type === "thread.metadata.updated" && event.payload.name) {

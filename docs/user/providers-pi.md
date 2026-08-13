@@ -22,7 +22,11 @@ interface. Terminal-only components such as custom widgets, footers, themes, sho
 TUI components do not render in T3 Code.
 
 Use `/compact` to manually compact the current Pi context. Optional text after the command is passed
-to Pi as custom compaction instructions. T3 Code also supports `/reload` through a Pi extension command
+to Pi as custom compaction instructions. With the T3 tree-fork bridge installed, `/tree` opens a
+standard selection dialog and creates a new T3 thread from the selected Pi history point. The original
+thread remains unchanged.
+
+T3 Code also supports `/reload` through a Pi extension command
 named `reload`. Add this global extension at `~/.pi/agent/extensions/reload/index.ts`:
 
 ```ts

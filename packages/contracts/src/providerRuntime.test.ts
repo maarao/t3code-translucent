@@ -23,6 +23,32 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.providerInstanceId).toBe("ollama_local");
   });
 
+  it("decodes provider-created thread forks with opaque resume state", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "thread.forked",
+      eventId: "event-pi-fork",
+      provider: "pi",
+      providerInstanceId: "pi",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-source",
+      turnId: "turn-tree",
+      payload: {
+        destinationThreadId: "thread-fork",
+        resume: { schemaVersion: 1, sessionFile: "/tmp/fork.jsonl" },
+      },
+    });
+
+    expect(parsed.type).toBe("thread.forked");
+    if (parsed.type !== "thread.forked") {
+      throw new Error("expected thread.forked");
+    }
+    expect(parsed.payload.destinationThreadId).toBe("thread-fork");
+    expect(parsed.payload.resume).toEqual({
+      schemaVersion: 1,
+      sessionFile: "/tmp/fork.jsonl",
+    });
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",

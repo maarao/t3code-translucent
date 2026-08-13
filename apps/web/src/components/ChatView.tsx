@@ -231,6 +231,8 @@ import {
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import {
+  armThreadForkNavigation,
+  consumeThreadForkNavigation,
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
@@ -1291,6 +1293,27 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
+  const threadForkNavigationTarget = useMemo(
+    () =>
+      routeKind === "server"
+        ? consumeThreadForkNavigation({
+            environmentId: routeThreadRef.environmentId,
+            threadId: routeThreadRef.threadId,
+            activities: activeServerThread?.activities ?? [],
+          })
+        : null,
+    [activeServerThread?.activities, routeKind, routeThreadRef],
+  );
+  useEffect(() => {
+    if (threadForkNavigationTarget === null) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: {
+        environmentId: routeThreadRef.environmentId,
+        threadId: threadForkNavigationTarget.destinationThreadId,
+      },
+    });
+  }, [navigate, routeThreadRef.environmentId, threadForkNavigationTarget]);
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -5023,6 +5046,13 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
+    if (isServerThread && trimmed === "/tree") {
+      armThreadForkNavigation({
+        environmentId,
+        threadId: threadIdForSend,
+        activities: activeThread.activities,
+      });
+    }
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath

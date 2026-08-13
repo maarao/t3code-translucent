@@ -14,7 +14,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderUserInputAnswers,
-  type ThreadId,
+  ThreadId,
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
@@ -47,6 +47,8 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
 const PI_COMPACTION_TIMEOUT = "2 minutes";
+const PI_TREE_SELECTION_TIMEOUT = "30 minutes";
+const PI_TREE_FORK_BRIDGE_COMMAND = "t3-tree-fork";
 const WORKFLOW_TEXT_MAX_LENGTH = 4_000;
 const WORKFLOW_PHASE_MAX_COUNT = 32;
 const WORKFLOW_AGENT_MAX_COUNT = 100;
@@ -189,6 +191,7 @@ function modelParts(model: string) {
 function piRuntimeCommand(value: string | undefined) {
   const input = value?.trim();
   if (input === "/reload") return { type: "reload" } as const;
+  if (input === "/tree") return { type: "tree" } as const;
   if (input === "/compact") {
     return { type: "compact", customInstructions: undefined } as const;
   }
@@ -200,6 +203,10 @@ function piRuntimeCommand(value: string | undefined) {
     } as const;
   }
   return undefined;
+}
+
+function samePiSession(left: PiResumeCursor, right: PiResumeCursor) {
+  return left.sessionId === right.sessionId && left.sessionFile === right.sessionFile;
 }
 
 function hasPiCommand(response: Readonly<Record<string, unknown>>, commandName: string) {
@@ -1324,6 +1331,7 @@ export function makePiAdapter(
 
     const stopSessionInternal = Effect.fn("PiAdapter.stopSessionInternal")(function* (
       ctx: PiSessionContext,
+      options?: { readonly publishExit?: boolean },
     ) {
       if (ctx.stopped) return;
       ctx.stopped = true;
@@ -1351,14 +1359,16 @@ export function makePiAdapter(
       yield* ctx.process.stop;
       yield* Scope.close(ctx.scope, Exit.void).pipe(Effect.ignore);
       sessions.delete(ctx.threadId);
-      yield* publish({
-        type: "session.exited",
-        ...(yield* makeStamp()),
-        provider: PROVIDER,
-        providerInstanceId: boundInstanceId,
-        threadId: ctx.threadId,
-        payload: { exitKind: "graceful" },
-      });
+      if (options?.publishExit !== false) {
+        yield* publish({
+          type: "session.exited",
+          ...(yield* makeStamp()),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          threadId: ctx.threadId,
+          payload: { exitKind: "graceful" },
+        });
+      }
     });
 
     const startSession: ProviderAdapterShape<ProviderAdapterError>["startSession"] = (input) =>
@@ -1572,7 +1582,7 @@ export function makePiAdapter(
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
+        let ctx = yield* requireSession(input.threadId);
         const runtimeCommand = piRuntimeCommand(input.input);
         if (runtimeCommand && (input.attachments?.length ?? 0) > 0) {
           return yield* new ProviderAdapterValidationError({
@@ -1623,6 +1633,63 @@ export function makePiAdapter(
             const commands = yield* ctx.process
               .request("get_commands")
               .pipe(mapRpcError(input.threadId, "get_commands"));
+            if (runtimeCommand.type === "tree") {
+              if (!hasPiCommand(commands, PI_TREE_FORK_BRIDGE_COMMAND)) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "tree",
+                  detail:
+                    "Pi did not report the T3 tree-fork bridge extension. Install the bridge extension and restart the Pi session.",
+                });
+              }
+
+              const originalCursor = yield* refreshSessionCursor(ctx);
+              yield* ctx.process
+                .request(
+                  "prompt",
+                  { message: `/${PI_TREE_FORK_BRIDGE_COMMAND}` },
+                  { timeout: PI_TREE_SELECTION_TIMEOUT },
+                )
+                .pipe(mapRpcError(input.threadId, "tree"));
+              const forkCursor = yield* refreshSessionCursor(ctx);
+              if (samePiSession(originalCursor, forkCursor)) return;
+
+              const destinationThreadId = ThreadId.make(yield* randomUUIDv4);
+              yield* publish({
+                type: "thread.forked",
+                ...(yield* makeStamp()),
+                provider: PROVIDER,
+                providerInstanceId: boundInstanceId,
+                threadId: input.threadId,
+                turnId,
+                payload: { destinationThreadId, resume: forkCursor },
+              });
+
+              const cwd = ctx.session.cwd;
+              if (!cwd) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "tree",
+                  detail: "Cannot restore the original Pi session because its cwd is unavailable.",
+                });
+              }
+              const runtimeMode = ctx.session.runtimeMode;
+              yield* stopSessionInternal(ctx, { publishExit: false });
+              yield* startSession({
+                threadId: input.threadId,
+                provider: PROVIDER,
+                providerInstanceId: boundInstanceId,
+                cwd,
+                ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+                resumeCursor: originalCursor,
+                runtimeMode,
+              });
+              ctx = yield* requireSession(input.threadId);
+              ctx.activeTurnId = turnId;
+              ctx.turns.push({ id: turnId, items: [] });
+              return;
+            }
+
             if (!hasPiCommand(commands, "reload")) {
               return yield* new ProviderAdapterRequestError({
                 provider: PROVIDER,
@@ -1975,7 +2042,8 @@ export function makePiAdapter(
         const ctx = sessions.get(threadId);
         return ctx !== undefined && !ctx.stopped;
       });
-    const stopAll = () => Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
+    const stopAll = () =>
+      Effect.forEach(sessions.values(), (ctx) => stopSessionInternal(ctx), { discard: true });
 
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(

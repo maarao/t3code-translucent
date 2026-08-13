@@ -11,6 +11,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { armThreadForkNavigation } from "@t3tools/client-runtime/state/threads";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -145,6 +146,14 @@ export function useThreadComposerState() {
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) {
       return null;
+    }
+
+    if (text === "/tree") {
+      armThreadForkNavigation({
+        environmentId: selectedThreadShell.environmentId,
+        threadId: selectedThreadShell.id,
+        activities: selectedThreadDetail?.activities ?? [],
+      });
     }
 
     const metadata = makeQueuedMessageMetadata();
