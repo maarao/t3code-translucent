@@ -55,7 +55,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(
+    t3-mobile-draft-headline
+  ) {
   animation-duration: 130ms;
 }
 
@@ -1645,9 +1647,15 @@ html.electron [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--sidebar) var(--glass-opacity), transparent);
 }
 
-html.electron [data-slot="sidebar-inset"],
 html.electron .thread-terminal-drawer {
   background-color: color-mix(in srgb, var(--background) var(--glass-opacity), transparent);
+}
+
+/* SidebarInset is the full main canvas once a route mounts. It must stay
+   transparent or thread loading replaces the native material with a dark
+   glass-opacity fill. */
+html.electron [data-slot="sidebar-inset"] {
+  background-color: transparent;
 }
 
 /* The current sidebar passes its solid background class to the fixed outer
