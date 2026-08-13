@@ -14,6 +14,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -132,6 +133,63 @@ it.layer(testLayer)("PiAdapter", (it) => {
         totalProcessedTokens: 10_000,
         compactsAutomatically: true,
       });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("uses Pi's explicit steer RPC for messages sent during an active turn", () =>
+    Effect.gen(function* () {
+      const requestLog = NodePath.join(
+        yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-steer-")),
+        ),
+        "requests.ndjson",
+      );
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({
+          T3_PI_RPC_HOLD_UNTIL_STEER: "1",
+          T3_PI_RPC_REQUEST_LOG_PATH: requestLog,
+        }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const firstDelta = yield* Deferred.make<void>();
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          event.type === "content.delta" ? Deferred.succeed(firstDelta, undefined) : Effect.void,
+        ),
+        Effect.forkChild,
+      );
+      const threadId = ThreadId.make("pi-rpc-steer-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const firstTurn = yield* adapter
+        .sendTurn({ threadId, input: "initial request" })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(firstDelta);
+      yield* adapter.sendTurn({ threadId, input: "redirect the active work" });
+      yield* Fiber.join(firstTurn);
+      yield* Fiber.interrupt(eventFiber);
+
+      const requests = (yield* Effect.promise(() => NodeFSP.readFile(requestLog, "utf8")))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const steeringRequest = requests.find((request) => request.type === "steer");
+      assert.deepEqual(steeringRequest, {
+        id: steeringRequest?.id,
+        type: "steer",
+        message: "redirect the active work",
+        images: [],
+      });
+      assert.equal(
+        requests.some(
+          (request) => request.type === "prompt" && request.message === "redirect the active work",
+        ),
+        false,
+      );
     }).pipe(Effect.scoped),
   );
 

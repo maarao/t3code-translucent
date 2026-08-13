@@ -29,6 +29,12 @@ function respond(request: Record<string, unknown>, data?: unknown) {
   });
 }
 
+function settleAgent() {
+  send({ type: "message_end", message: { role: "assistant", timestamp: promptCount } });
+  send({ type: "agent_end", messages: [], willRetry: false });
+  send({ type: "agent_settled" });
+}
+
 function handle(request: Record<string, unknown>) {
   if (requestLogPath) {
     NodeFS.appendFileSync(requestLogPath, `${JSON.stringify(request)}\n`, "utf8");
@@ -285,9 +291,9 @@ function handle(request: Record<string, unknown>) {
           });
         }
       }
-      send({ type: "message_end", message: { role: "assistant", timestamp: promptCount } });
-      send({ type: "agent_end", messages: [], willRetry: false });
-      send({ type: "agent_settled" });
+      if (process.env.T3_PI_RPC_HOLD_UNTIL_STEER !== "1") {
+        settleAgent();
+      }
       if (process.env.T3_PI_RPC_EMIT_SUBAGENT_RESULT === "1") {
         setTimeout(() => {
           const resultMessage = {
@@ -326,6 +332,12 @@ function handle(request: Record<string, unknown>) {
       }
       return;
     }
+    case "steer":
+      respond(request);
+      if (process.env.T3_PI_RPC_HOLD_UNTIL_STEER === "1") {
+        settleAgent();
+      }
+      return;
     case "extension_ui_response":
       return;
     default:
