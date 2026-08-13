@@ -135,6 +135,112 @@ it.layer(testLayer)("PiAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("runs Pi compact and extension-backed reload commands without an agent turn", () =>
+    Effect.gen(function* () {
+      const logDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-rpc-command-")),
+      );
+      const requestLogPath = NodePath.join(logDir, "requests.jsonl");
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({ T3_PI_RPC_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+        Effect.forkChild,
+      );
+      const threadId = ThreadId.make("pi-rpc-command-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const compactTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "/compact Focus on the implementation",
+      });
+      const reloadTurn = yield* adapter.sendTurn({ threadId, input: "/reload" });
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)));
+      yield* Fiber.interrupt(eventFiber);
+
+      const requests = (yield* Effect.promise(() => NodeFSP.readFile(requestLogPath, "utf8")))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert(
+        requests.some(
+          (request) =>
+            request.type === "compact" &&
+            request.customInstructions === "Focus on the implementation",
+        ),
+      );
+      assert(
+        requests.some((request) => request.type === "prompt" && request.message === "/reload"),
+      );
+      assert.equal(events.filter((event) => event.type === "turn.started").length, 2);
+      assert(
+        events.some(
+          (event) => event.type === "turn.completed" && event.turnId === compactTurn.turnId,
+        ),
+      );
+      assert(
+        events.some(
+          (event) => event.type === "turn.completed" && event.turnId === reloadTurn.turnId,
+        ),
+      );
+      assert(
+        events.some(
+          (event) =>
+            event.type === "item.started" &&
+            event.turnId === compactTurn.turnId &&
+            event.payload.itemType === "context_compaction",
+        ),
+      );
+      assert(
+        events.some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.turnId === compactTurn.turnId &&
+            event.payload.itemType === "context_compaction" &&
+            event.payload.status === "completed",
+        ),
+      );
+      const contextUsage = events.findLast((event) => event.type === "thread.token-usage.updated");
+      assert(contextUsage?.type === "thread.token-usage.updated");
+      assert.equal(contextUsage.payload.usage.usedTokens, null);
+      assert.equal(
+        events.some(
+          (event) =>
+            event.type === "content.delta" &&
+            (event.turnId === compactTurn.turnId || event.turnId === reloadTurn.turnId),
+        ),
+        false,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects reload when Pi does not expose the extension bridge", () =>
+    Effect.gen(function* () {
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({ T3_PI_RPC_DISABLE_RELOAD: "1" }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const threadId = ThreadId.make("pi-rpc-missing-reload-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const failure = yield* Effect.flip(adapter.sendTurn({ threadId, input: "/reload" }));
+      assert.match(failure.message, /reload extension command/u);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("namespaces reused extension subagent ids per Pi process", () =>
     Effect.gen(function* () {
       const wrapper = yield* Effect.promise(() =>

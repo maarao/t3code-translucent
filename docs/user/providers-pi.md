@@ -21,6 +21,26 @@ Pi extension selection, confirmation, text-input, and editor requests appear in 
 interface. Terminal-only components such as custom widgets, footers, themes, shortcuts, and custom
 TUI components do not render in T3 Code.
 
+Use `/compact` to manually compact the current Pi context. Optional text after the command is passed
+to Pi as custom compaction instructions. T3 Code also supports `/reload` through a Pi extension command
+named `reload`. Add this global extension at `~/.pi/agent/extensions/reload/index.ts`:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand("reload", {
+    description: "Reload Pi resources",
+    handler: async (_args, ctx) => {
+      await ctx.waitForIdle();
+      await ctx.reload();
+    },
+  });
+}
+```
+
+Restart active Pi threads after installing the extension so the RPC session discovers it.
+
 Subagents launched by Pi's `subagent_spawn` extension appear in T3 Code's Agents panel. Their start,
 completion, harness, model, and final summary are retained even when they outlive the turn that
 spawned them. Blocking workflow runs also show their current phase and completion progress, with each

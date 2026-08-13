@@ -43,6 +43,17 @@ describe("buildInitialPiProviderSnapshot", () => {
       expect(snapshot.enabled).toBe(true);
       expect(snapshot.status).toBe("warning");
       expect(snapshot.message).toContain("Checking Pi");
+      expect(snapshot.slashCommands).toEqual([
+        {
+          name: "compact",
+          description: "Compact the current Pi context",
+          input: { hint: "[instructions]" },
+        },
+        {
+          name: "reload",
+          description: "Reload Pi extensions, skills, prompts, themes, and context files",
+        },
+      ]);
     }),
   );
 });

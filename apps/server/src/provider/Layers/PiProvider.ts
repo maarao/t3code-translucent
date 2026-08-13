@@ -35,6 +35,17 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 });
 
 const REASONING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const PI_SLASH_COMMANDS = [
+  {
+    name: "compact",
+    description: "Compact the current Pi context",
+    input: { hint: "[instructions]" },
+  },
+  {
+    name: "reload",
+    description: "Reload Pi extensions, skills, prompts, themes, and context files",
+  },
+] as const;
 
 function titleCase(value: string): string {
   return value
@@ -126,6 +137,7 @@ export function buildInitialPiProviderSnapshot(
       enabled: piSettings.enabled,
       checkedAt,
       models: modelsFromSettings(piSettings),
+      slashCommands: PI_SLASH_COMMANDS,
       probe: piSettings.enabled
         ? {
             installed: true,
@@ -171,6 +183,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       enabled: true,
       checkedAt,
       models: fallbackModels,
+      slashCommands: PI_SLASH_COMMANDS,
       probe: {
         installed: !missing,
         version: null,
@@ -188,6 +201,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       enabled: true,
       checkedAt,
       models: fallbackModels,
+      slashCommands: PI_SLASH_COMMANDS,
       probe: {
         installed: true,
         version: null,
@@ -215,6 +229,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     enabled: true,
     checkedAt,
     models,
+    slashCommands: PI_SLASH_COMMANDS,
     probe: {
       installed: versionOutput.code === 0,
       version,

@@ -71,6 +71,11 @@ interface PiTurnRecord {
   userEntryId?: string;
 }
 
+interface PendingManualCompaction {
+  readonly turnId: TurnId;
+  readonly completion: Deferred.Deferred<void, never>;
+}
+
 interface TaskMetadata {
   readonly title: string;
   readonly role?: string;
@@ -108,6 +113,7 @@ interface PiSessionContext {
   activeTurnId: TurnId | undefined;
   syntheticTurn: boolean;
   activeTurnCompletion: Deferred.Deferred<void, Error> | undefined;
+  manualCompaction: PendingManualCompaction | undefined;
   activeAssistantItemId: RuntimeItemId | undefined;
   stopped: boolean;
 }
@@ -177,6 +183,33 @@ function modelParts(model: string) {
   return slash > 0
     ? { provider: model.slice(0, slash), modelId: model.slice(slash + 1) }
     : undefined;
+}
+
+function piRuntimeCommand(value: string | undefined) {
+  const input = value?.trim();
+  if (input === "/reload") return { type: "reload" } as const;
+  if (input === "/compact") {
+    return { type: "compact", customInstructions: undefined } as const;
+  }
+  if (input?.startsWith("/compact ")) {
+    const customInstructions = input.slice("/compact ".length).trim();
+    return {
+      type: "compact",
+      ...(customInstructions ? { customInstructions } : {}),
+    } as const;
+  }
+  return undefined;
+}
+
+function hasPiCommand(response: Readonly<Record<string, unknown>>, commandName: string) {
+  const commands = rpcData(response)?.commands;
+  return (
+    Array.isArray(commands) &&
+    commands.some((value) => {
+      const command = record(value);
+      return command?.name === commandName && command.source === "extension";
+    })
+  );
 }
 
 function reasoningSelection(options: ReadonlyArray<ProviderOptionSelection> | null | undefined) {
@@ -890,6 +923,41 @@ export function makePiAdapter(
       });
     });
 
+    const refreshSessionCursor = Effect.fn("PiAdapter.refreshSessionCursor")(function* (
+      ctx: PiSessionContext,
+      turn?: PiTurnRecord,
+    ) {
+      const entries = yield* ctx.process
+        .request("get_entries")
+        .pipe(Effect.orElseSucceed(() => ({})));
+      const entryData = rpcData(entries);
+      const userEntryId = latestUserEntryId(entries);
+      if (turn && userEntryId) turn.userEntryId = userEntryId;
+      const stateMessage = yield* ctx.process
+        .request("get_state")
+        .pipe(mapRpcError(ctx.threadId, "get_state"));
+      const state = rpcData(stateMessage);
+      const sessionFile = stringValue(state?.sessionFile);
+      const leafId = stringValue(entryData?.leafId);
+      const cursor: PiResumeCursor = {
+        schemaVersion: PI_RESUME_VERSION,
+        sessionId:
+          stringValue(state?.sessionId) ??
+          parseResumeCursor(ctx.session.resumeCursor)?.sessionId ??
+          "unknown",
+        ...(sessionFile ? { sessionFile } : {}),
+        ...(leafId ? { leafId } : {}),
+      };
+      ctx.session = {
+        ...ctx.session,
+        status: "ready",
+        activeTurnId: undefined,
+        resumeCursor: cursor,
+        updatedAt: yield* nowIso,
+      };
+      return cursor;
+    });
+
     const finalizeSettledTurn = Effect.fn("PiAdapter.finalizeSettledTurn")(function* (
       ctx: PiSessionContext,
     ) {
@@ -919,10 +987,6 @@ export function makePiAdapter(
       const type = stringValue(event.type);
       if (!type) return;
 
-      if (type === "compaction_end") {
-        yield* emitContextUsage(ctx);
-        return;
-      }
       if (type === "agent_start") {
         if (!ctx.activeTurnId) {
           const turnId = TurnId.make(yield* randomUUIDv4);
@@ -1215,14 +1279,15 @@ export function makePiAdapter(
         return;
       }
       if (type === "compaction_start") {
+        const turnId = ctx.manualCompaction?.turnId ?? ctx.activeTurnId;
         yield* publish({
           type: "item.started",
           ...(yield* makeStamp()),
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: ctx.threadId,
-          turnId: ctx.activeTurnId,
-          itemId: RuntimeItemId.make(`pi-compaction-${ctx.activeTurnId ?? "session"}`),
+          turnId,
+          itemId: RuntimeItemId.make(`pi-compaction-${turnId ?? "session"}`),
           payload: {
             itemType: "context_compaction",
             status: "inProgress",
@@ -1232,14 +1297,17 @@ export function makePiAdapter(
         return;
       }
       if (type === "compaction_end") {
+        const pendingManualCompaction = ctx.manualCompaction;
+        const turnId = pendingManualCompaction?.turnId ?? ctx.activeTurnId;
+        yield* emitContextUsage(ctx);
         yield* publish({
           type: "item.completed",
           ...(yield* makeStamp()),
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: ctx.threadId,
-          turnId: ctx.activeTurnId,
-          itemId: RuntimeItemId.make(`pi-compaction-${ctx.activeTurnId ?? "session"}`),
+          turnId,
+          itemId: RuntimeItemId.make(`pi-compaction-${turnId ?? "session"}`),
           payload: {
             itemType: "context_compaction",
             status: event.aborted === true || event.errorMessage ? "failed" : "completed",
@@ -1247,6 +1315,9 @@ export function makePiAdapter(
             data: event,
           },
         });
+        if (pendingManualCompaction) {
+          yield* Deferred.succeed(pendingManualCompaction.completion, undefined);
+        }
       }
     });
 
@@ -1428,6 +1499,7 @@ export function makePiAdapter(
           activeTurnId: undefined,
           syntheticTurn: false,
           activeTurnCompletion: undefined,
+          manualCompaction: undefined,
           activeAssistantItemId: undefined,
           stopped: false,
         };
@@ -1500,6 +1572,104 @@ export function makePiAdapter(
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        const runtimeCommand = piRuntimeCommand(input.input);
+        if (runtimeCommand && (input.attachments?.length ?? 0) > 0) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Pi /${runtimeCommand.type} does not accept attachments.`,
+          });
+        }
+        if (runtimeCommand && ctx.activeTurnId) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Wait for the active Pi turn to finish before running /${runtimeCommand.type}.`,
+          });
+        }
+        if (runtimeCommand) {
+          const turnId = TurnId.make(yield* randomUUIDv4);
+          ctx.activeTurnId = turnId;
+          ctx.syntheticTurn = false;
+          ctx.turns.push({ id: turnId, items: [] });
+          yield* publish({
+            type: "turn.started",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            turnId,
+            payload: { model: ctx.session.model },
+          });
+
+          const executeCommand = Effect.gen(function* () {
+            if (runtimeCommand.type === "compact") {
+              const completion = yield* Deferred.make<void, never>();
+              ctx.manualCompaction = { turnId, completion };
+              yield* ctx.process
+                .request(
+                  "compact",
+                  runtimeCommand.customInstructions
+                    ? { customInstructions: runtimeCommand.customInstructions }
+                    : undefined,
+                )
+                .pipe(mapRpcError(input.threadId, "compact"));
+              yield* Deferred.await(completion).pipe(Effect.timeoutOption("5 seconds"));
+              return;
+            }
+
+            const commands = yield* ctx.process
+              .request("get_commands")
+              .pipe(mapRpcError(input.threadId, "get_commands"));
+            if (!hasPiCommand(commands, "reload")) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "reload",
+                detail:
+                  "Pi did not report a /reload extension command. Install the reload bridge extension and restart the Pi session.",
+              });
+            }
+            yield* ctx.process
+              .request("prompt", { message: "/reload" })
+              .pipe(mapRpcError(input.threadId, "reload"));
+          });
+
+          yield* executeCommand.pipe(
+            Effect.tapError((cause) =>
+              Effect.gen(function* () {
+                ctx.activeTurnId = undefined;
+                ctx.manualCompaction = undefined;
+                yield* publish({
+                  type: "turn.completed",
+                  ...(yield* makeStamp()),
+                  provider: PROVIDER,
+                  providerInstanceId: boundInstanceId,
+                  threadId: input.threadId,
+                  turnId,
+                  payload: {
+                    state: "failed",
+                    stopReason: "command_failed",
+                    errorMessage: cause.message,
+                  },
+                });
+              }),
+            ),
+          );
+          ctx.manualCompaction = undefined;
+          yield* emitContextUsage(ctx);
+          yield* publish({
+            type: "turn.completed",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            turnId,
+            payload: { state: "completed", stopReason: "command_completed" },
+          });
+          ctx.activeTurnId = undefined;
+          const cursor = yield* refreshSessionCursor(ctx);
+          return { threadId: input.threadId, turnId, resumeCursor: cursor };
+        }
         if (ctx.activeTurnCompletion) {
           const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
             Effect.gen(function* () {
@@ -1659,34 +1829,7 @@ export function makePiAdapter(
           payload: { state: "completed", stopReason: "agent_settled" },
         });
 
-        const entries = yield* ctx.process
-          .request("get_entries")
-          .pipe(Effect.orElseSucceed(() => ({})));
-        const entryData = rpcData(entries);
-        const userEntryId = latestUserEntryId(entries);
-        if (userEntryId) turn.userEntryId = userEntryId;
-        const stateMessage = yield* ctx.process
-          .request("get_state")
-          .pipe(mapRpcError(input.threadId, "get_state"));
-        const state = rpcData(stateMessage);
-        const sessionFile = stringValue(state?.sessionFile);
-        const leafId = stringValue(entryData?.leafId);
-        const cursor: PiResumeCursor = {
-          schemaVersion: PI_RESUME_VERSION,
-          sessionId:
-            stringValue(state?.sessionId) ??
-            parseResumeCursor(ctx.session.resumeCursor)?.sessionId ??
-            "unknown",
-          ...(sessionFile ? { sessionFile } : {}),
-          ...(leafId ? { leafId } : {}),
-        };
-        ctx.session = {
-          ...ctx.session,
-          status: "ready",
-          activeTurnId: undefined,
-          resumeCursor: cursor,
-          updatedAt: yield* nowIso,
-        };
+        const cursor = yield* refreshSessionCursor(ctx, turn);
         return { threadId: input.threadId, turnId, resumeCursor: cursor };
       });
 

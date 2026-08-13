@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 
 let buffer = "";
 let promptCount = 0;
+let compacted = false;
 const requestLogPath = process.env.T3_PI_RPC_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_PI_RPC_EXIT_LOG_PATH;
 
@@ -64,10 +65,50 @@ function handle(request: Record<string, unknown>) {
     case "get_available_models":
       respond(request, { models: [] });
       return;
+    case "get_commands":
+      respond(request, {
+        commands:
+          process.env.T3_PI_RPC_DISABLE_RELOAD === "1"
+            ? []
+            : [
+                {
+                  name: "reload",
+                  description: "Reload Pi resources",
+                  source: "extension",
+                },
+              ],
+      });
+      return;
     case "get_session_stats":
       respond(request, {
         tokens: { input: 9000, output: 1000, cacheRead: 0, cacheWrite: 0, total: 10000 },
-        contextUsage: { tokens: 24000, contextWindow: 100000, percent: 24 },
+        contextUsage: {
+          tokens: compacted ? null : 24000,
+          contextWindow: 100000,
+          percent: compacted ? null : 24,
+        },
+      });
+      return;
+    case "compact":
+      send({ type: "compaction_start", reason: "manual" });
+      compacted = true;
+      send({
+        type: "compaction_end",
+        reason: "manual",
+        result: {
+          summary: "Compacted mock context",
+          firstKeptEntryId: `user-entry-${promptCount}`,
+          tokensBefore: 24000,
+          estimatedTokensAfter: 4000,
+        },
+        aborted: false,
+        willRetry: false,
+      });
+      respond(request, {
+        summary: "Compacted mock context",
+        firstKeptEntryId: `user-entry-${promptCount}`,
+        tokensBefore: 24000,
+        estimatedTokensAfter: 4000,
       });
       return;
     case "set_model":
@@ -83,6 +124,10 @@ function handle(request: Record<string, unknown>) {
       );
       return;
     case "prompt": {
+      if (request.message === "/reload") {
+        respond(request);
+        return;
+      }
       promptCount += 1;
       respond(request);
       send({ type: "agent_start" });
