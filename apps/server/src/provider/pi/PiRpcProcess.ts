@@ -1,5 +1,6 @@
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
@@ -33,13 +34,14 @@ export interface PiRpcProcessOptions {
   readonly cwd: string;
   readonly args?: ReadonlyArray<string>;
   readonly env?: NodeJS.ProcessEnv;
-  readonly requestTimeout?: "30 seconds" | "60 seconds";
+  readonly requestTimeout?: Duration.Input;
 }
 
 export interface PiRpcProcess {
   readonly request: (
     type: string,
     payload?: Readonly<Record<string, unknown>>,
+    options?: { readonly timeout?: Duration.Input },
   ) => Effect.Effect<Readonly<Record<string, unknown>>, PiRpcError>;
   readonly notify: (message: Readonly<Record<string, unknown>>) => Effect.Effect<void, PiRpcError>;
   readonly events: Stream.Stream<Readonly<Record<string, unknown>>>;
@@ -178,7 +180,7 @@ export const makePiRpcProcess = Effect.fn("makePiRpcProcess")(function* (
     );
   });
 
-  const request: PiRpcProcess["request"] = (type, payload = {}) =>
+  const request: PiRpcProcess["request"] = (type, payload = {}, requestOptions) =>
     Effect.gen(function* () {
       const sequence = yield* Ref.getAndUpdate(sequenceRef, (current) => current + 1);
       const id = `t3-${sequence + 1}`;
@@ -199,7 +201,7 @@ export const makePiRpcProcess = Effect.fn("makePiRpcProcess")(function* (
       );
       const message = yield* Deferred.await(response).pipe(
         Effect.timeoutOrElse({
-          duration: options.requestTimeout ?? "30 seconds",
+          duration: requestOptions?.timeout ?? options.requestTimeout ?? "30 seconds",
           orElse: () =>
             Effect.fail(
               new PiRpcError({
