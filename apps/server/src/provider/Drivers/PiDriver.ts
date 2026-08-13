@@ -121,6 +121,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       const adapter = yield* makeCursorAdapter(cursorSettings, {
         provider: DRIVER_KIND,
         mapRuntimeModeToAcpMode: false,
+        finalizeOutOfBandAssistantOutput: true,
+        suppressPiAcpStartupInfo: true,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,

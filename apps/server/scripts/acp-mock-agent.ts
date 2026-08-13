@@ -24,6 +24,9 @@ const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATE
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
+const emitOutOfBandAssistantAfterPrompt =
+  process.env.T3_ACP_EMIT_OUT_OF_BAND_ASSISTANT_AFTER_PROMPT === "1";
+const emitPiAcpStartupInfo = process.env.T3_ACP_EMIT_PI_ACP_STARTUP_INFO === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
@@ -310,11 +313,24 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      models: modelState(),
-      configOptions: configOptions(),
+    Effect.gen(function* () {
+      const startupInfo = "pi v0.84.1\n---\n\n## Skills\n- /mock/SKILL.md\n";
+      if (emitPiAcpStartupInfo) {
+        yield* agent.client.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: startupInfo },
+          },
+        });
+      }
+      return {
+        sessionId,
+        modes: modeState(),
+        models: modelState(),
+        configOptions: configOptions(),
+        ...(emitPiAcpStartupInfo ? { _meta: { piAcp: { startupInfo } } } : {}),
+      };
     }),
   );
 
@@ -872,6 +888,23 @@ const program = Effect.gen(function* () {
           content: { type: "text", text: promptResponseText ?? "hello from mock" },
         },
       });
+
+      if (emitOutOfBandAssistantAfterPrompt && promptCount === 1) {
+        yield* Effect.sleep("50 millis").pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              writeJsonRpcNotification("session/update", {
+                sessionId: requestedSessionId,
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  content: { type: "text", text: "late background result" },
+                },
+              });
+            }),
+          ),
+          Effect.forkDetach,
+        );
+      }
 
       return { stopReason: "end_turn" };
     }),

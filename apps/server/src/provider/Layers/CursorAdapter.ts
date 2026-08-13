@@ -84,6 +84,7 @@ const CURSOR_RESUME_VERSION = 1 as const;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
+const OUT_OF_BAND_ASSISTANT_IDLE_TIMEOUT = "500 millis";
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -95,6 +96,10 @@ export interface CursorAdapterLiveOptions {
   readonly provider?: ProviderDriverKind;
   /** Pi exposes thinking levels as ACP modes, not T3 interaction modes. */
   readonly mapRuntimeModeToAcpMode?: boolean;
+  /** Close assistant output emitted outside an active ACP prompt after it goes idle. */
+  readonly finalizeOutOfBandAssistantOutput?: boolean;
+  /** Suppress pi-acp's synthetic startup prelude from the persisted transcript. */
+  readonly suppressPiAcpStartupInfo?: boolean;
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -135,12 +140,17 @@ interface CursorSessionContext {
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
+  readonly assistantItemTurnIds: Map<string, TurnId | undefined>;
+  readonly pendingAssistantItemStarts: Set<string>;
+  readonly suppressedAssistantItemIds: Set<string>;
+  suppressedAssistantText: string | undefined;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
   /** Number of sendTurn prompts currently in flight or being prepared.
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
+  outOfBandAssistantFlushFiber: Fiber.Fiber<void, never> | undefined;
   stopped: boolean;
 }
 
@@ -172,6 +182,17 @@ function settlePendingUserInputsAsEmptyAnswers(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function piAcpStartupInfo(
+  sessionSetupResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["sessionSetupResult"],
+): string | undefined {
+  if (!isRecord(sessionSetupResult._meta)) return undefined;
+  const piAcp = sessionSetupResult._meta.piAcp;
+  if (!isRecord(piAcp)) return undefined;
+  return typeof piAcp.startupInfo === "string" && piAcp.startupInfo.length > 0
+    ? piAcp.startupInfo
+    : undefined;
 }
 
 function parseCursorResume(raw: unknown): { sessionId: string } | undefined {
@@ -466,10 +487,32 @@ export function makeCursorAdapter(
       return Effect.succeed(ctx);
     };
 
+    const getAssistantItemTurnId = (ctx: CursorSessionContext, itemId: string) =>
+      ctx.assistantItemTurnIds.has(itemId)
+        ? ctx.assistantItemTurnIds.get(itemId)
+        : ctx.activeTurnId;
+
+    const cancelOutOfBandAssistantFlush = (ctx: CursorSessionContext) =>
+      Effect.gen(function* () {
+        if (ctx.outOfBandAssistantFlushFiber) {
+          yield* Fiber.interrupt(ctx.outOfBandAssistantFlushFiber);
+          ctx.outOfBandAssistantFlushFiber = undefined;
+        }
+      });
+
+    const scheduleOutOfBandAssistantFlush = (ctx: CursorSessionContext) =>
+      Effect.gen(function* () {
+        yield* cancelOutOfBandAssistantFlush(ctx);
+        ctx.outOfBandAssistantFlushFiber = yield* Effect.sleep(
+          OUT_OF_BAND_ASSISTANT_IDLE_TIMEOUT,
+        ).pipe(Effect.andThen(ctx.acp.flushAssistantSegment), Effect.forkIn(ctx.scope));
+      });
+
     const stopSessionInternal = (ctx: CursorSessionContext) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        yield* cancelOutOfBandAssistantFlush(ctx);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         if (ctx.notificationFiber) {
@@ -787,9 +830,17 @@ export function makeCursorAdapter(
             pendingApprovals,
             pendingUserInputs,
             turns: [],
+            assistantItemTurnIds: new Map(),
+            pendingAssistantItemStarts: new Set(),
+            suppressedAssistantItemIds: new Set(),
+            suppressedAssistantText:
+              options?.suppressPiAcpStartupInfo === true
+                ? piAcpStartupInfo(started.sessionSetupResult)
+                : undefined,
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             promptsInFlight: 0,
+            outOfBandAssistantFlushFiber: undefined,
             stopped: false,
           };
 
@@ -803,6 +854,11 @@ export function makeCursorAdapter(
                   case "ModeChanged":
                     return;
                   case "AssistantItemStarted":
+                    ctx.assistantItemTurnIds.set(event.itemId, ctx.activeTurnId);
+                    if (ctx.suppressedAssistantText !== undefined) {
+                      ctx.pendingAssistantItemStarts.add(event.itemId);
+                      return;
+                    }
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
@@ -815,16 +871,34 @@ export function makeCursorAdapter(
                     );
                     return;
                   case "AssistantItemCompleted":
+                    const assistantItemTurnId = getAssistantItemTurnId(ctx, event.itemId);
+                    if (ctx.suppressedAssistantItemIds.delete(event.itemId)) {
+                      ctx.assistantItemTurnIds.delete(event.itemId);
+                      return;
+                    }
+                    if (ctx.pendingAssistantItemStarts.delete(event.itemId)) {
+                      yield* offerRuntimeEvent(
+                        makeAcpAssistantItemEvent({
+                          stamp: yield* makeEventStamp(),
+                          provider: provider,
+                          threadId: ctx.threadId,
+                          turnId: assistantItemTurnId,
+                          itemId: event.itemId,
+                          lifecycle: "item.started",
+                        }),
+                      );
+                    }
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
                         provider: provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: assistantItemTurnId,
                         itemId: event.itemId,
                         lifecycle: "item.completed",
                       }),
                     );
+                    ctx.assistantItemTurnIds.delete(event.itemId);
                     return;
                   case "PlanUpdated":
                     yield* logNative(
@@ -866,17 +940,44 @@ export function makeCursorAdapter(
                       event.rawPayload,
                       "acp.jsonrpc",
                     );
+                    if (event.itemId && ctx.pendingAssistantItemStarts.has(event.itemId)) {
+                      ctx.pendingAssistantItemStarts.delete(event.itemId);
+                      if (event.text === ctx.suppressedAssistantText) {
+                        ctx.suppressedAssistantText = undefined;
+                        ctx.suppressedAssistantItemIds.add(event.itemId);
+                        return;
+                      }
+                      yield* offerRuntimeEvent(
+                        makeAcpAssistantItemEvent({
+                          stamp: yield* makeEventStamp(),
+                          provider: provider,
+                          threadId: ctx.threadId,
+                          turnId: getAssistantItemTurnId(ctx, event.itemId),
+                          itemId: event.itemId,
+                          lifecycle: "item.started",
+                        }),
+                      );
+                    }
+                    const contentTurnId = event.itemId
+                      ? getAssistantItemTurnId(ctx, event.itemId)
+                      : ctx.activeTurnId;
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
                         stamp: yield* makeEventStamp(),
                         provider: provider,
                         threadId: ctx.threadId,
-                        turnId: ctx.activeTurnId,
+                        turnId: contentTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         text: event.text,
                         rawPayload: event.rawPayload,
                       }),
                     );
+                    if (
+                      options?.finalizeOutOfBandAssistantOutput === true &&
+                      ctx.promptsInFlight === 0
+                    ) {
+                      yield* scheduleOutOfBandAssistantFlush(ctx);
+                    }
                     return;
                 }
               }),
@@ -921,6 +1022,11 @@ export function makeCursorAdapter(
     const sendTurn: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        if (options?.finalizeOutOfBandAssistantOutput === true) {
+          yield* cancelOutOfBandAssistantFlush(ctx);
+          yield* ctx.acp.flushAssistantSegment;
+          yield* ctx.acp.drainEvents;
+        }
         // A sendTurn while a prompt is in flight is a steer: the agent folds
         // the new prompt into the ongoing work, so the active turn id is
         // reused instead of opening a new turn.

@@ -154,7 +154,11 @@ const cursorAdapterTestLayer = it.layer(
     Effect.gen(function* () {
       const cursorConfig = decodeCursorSettings({});
       const resolveSettings = yield* makeResolveCursorSettings;
-      return yield* makeCursorAdapter(cursorConfig, { resolveSettings });
+      return yield* makeCursorAdapter(cursorConfig, {
+        resolveSettings,
+        finalizeOutOfBandAssistantOutput: true,
+        suppressPiAcpStartupInfo: true,
+      });
     }),
   ).pipe(
     Layer.provideMerge(ServerSettingsService.layerTest()),
@@ -247,6 +251,121 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       }
 
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps late assistant output on its original turn and finalizes it while idle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-out-of-band-assistant-output");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_OUT_OF_BAND_ASSISTANT_AFTER_PROMPT: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const lateDeltaReady = yield* Deferred.make<ProviderRuntimeEvent>();
+      const lateCompletedReady = yield* Deferred.make<ProviderRuntimeEvent>();
+      const observedEvents: Array<ProviderRuntimeEvent> = [];
+      let lateItemId: string | undefined;
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          if (String(event.threadId) !== String(threadId)) return;
+          observedEvents.push(event);
+          if (event.type === "content.delta" && event.payload.delta === "late background result") {
+            lateItemId = String(event.itemId);
+            yield* Deferred.succeed(lateDeltaReady, event).pipe(Effect.ignore);
+            return;
+          }
+          if (
+            event.type === "item.completed" &&
+            lateItemId !== undefined &&
+            String(event.itemId) === lateItemId
+          ) {
+            yield* Deferred.succeed(lateCompletedReady, event).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "start background work",
+        attachments: [],
+      });
+      const lateDelta = yield* Deferred.await(lateDeltaReady);
+      yield* TestClock.adjust("600 millis");
+      const lateCompleted = yield* Deferred.await(lateCompletedReady);
+
+      assert.equal(String(lateDelta.turnId), String(firstTurn.turnId));
+      assert.equal(String(lateCompleted.turnId), String(firstTurn.turnId));
+
+      const secondTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "follow-up prompt",
+        attachments: [],
+      });
+      assert.notEqual(String(secondTurn.turnId), String(firstTurn.turnId));
+      const lateItemEvents = observedEvents.filter(
+        (event) => "itemId" in event && String(event.itemId) === lateItemId,
+      );
+      assert.isTrue(lateItemEvents.length >= 3);
+      assert.isTrue(
+        lateItemEvents.every((event) => String(event.turnId) === String(firstTurn.turnId)),
+      );
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }),
+  );
+
+  it.effect("suppresses pi-acp startup info without suppressing the assistant response", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-pi-acp-startup-info");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_PI_ACP_STARTUP_INFO: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const observedEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          if (String(event.threadId) === String(threadId)) observedEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "respond normally",
+        attachments: [],
+      });
+
+      const assistantText = observedEvents
+        .filter((event) => event.type === "content.delta")
+        .map((event) => (event.type === "content.delta" ? event.payload.delta : ""))
+        .join("");
+      assert.notInclude(assistantText, "pi v0.84.1");
+      assert.include(assistantText, "hello from mock");
+      assert.equal(observedEvents.filter((event) => event.type === "item.started").length, 1);
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(runtimeEventsFiber);
     }),
   );
 

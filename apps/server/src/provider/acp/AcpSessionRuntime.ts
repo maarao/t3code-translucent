@@ -183,6 +183,12 @@ export class AcpSessionRuntime extends Context.Service<
     readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
     /** Waits until the current event consumer has processed every queued event. */
     readonly drainEvents: Effect.Effect<void>;
+    /**
+     * Closes the current assistant message segment, if any. ACP normally uses
+     * the prompt response as this boundary; adapters may also need to close
+     * unsolicited output emitted after a prompt has already settled.
+     */
+    readonly flushAssistantSegment: Effect.Effect<void>;
     /** Latest mode state observed from session setup and `session/update` notifications. */
     readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
     /** Latest configuration options observed from session setup and configuration writes. */
@@ -713,6 +719,10 @@ export const make = (
           acknowledge,
         });
         yield* Deferred.await(acknowledge);
+      }),
+      flushAssistantSegment: closeActiveAssistantSegment({
+        queue: eventQueue,
+        assistantSegmentRef,
       }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
