@@ -46,7 +46,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
-const PI_COMPACTION_TIMEOUT = "10 minutes";
+const PI_COMPACTION_TIMEOUT = "2 minutes";
 const WORKFLOW_TEXT_MAX_LENGTH = 4_000;
 const WORKFLOW_PHASE_MAX_COUNT = 32;
 const WORKFLOW_AGENT_MAX_COUNT = 100;
