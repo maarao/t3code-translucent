@@ -1534,11 +1534,12 @@ export function makePiAdapter(
           );
           const completion = ctx.activeTurnCompletion;
           yield* ctx.process
-            .request("steer", {
+            .request("prompt", {
               message: input.input ?? "",
               images,
+              streamingBehavior: "steer",
             })
-            .pipe(mapRpcError(input.threadId, "steer"));
+            .pipe(mapRpcError(input.threadId, "prompt"));
           yield* Deferred.await(completion).pipe(
             Effect.mapError(
               (cause) =>
