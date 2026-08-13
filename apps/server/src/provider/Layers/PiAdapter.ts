@@ -1364,6 +1364,11 @@ export function makePiAdapter(
           });
         }
         const now = yield* nowIso;
+        // Pi extension state is process-local: after an RPC process restarts,
+        // direct subagent ids begin again at sa-1 even when the durable Pi
+        // session resumes. Namespace tasks by this process incarnation so a
+        // new child cannot collide with an older persisted Agents-panel row.
+        const taskNamespace = `${sessionId}:${yield* randomUUIDv4}`;
         const sessionFile = stringValue(state?.sessionFile);
         const cursor: PiResumeCursor = {
           schemaVersion: PI_RESUME_VERSION,
@@ -1399,7 +1404,7 @@ export function makePiAdapter(
           workflowToolRuns: new Map(),
           taskTurnIds: new Map(),
           taskMetadata: new Map(),
-          taskNamespace: sessionId,
+          taskNamespace,
           autoCompactionEnabled:
             typeof state?.autoCompactionEnabled === "boolean"
               ? state.autoCompactionEnabled

@@ -90,7 +90,7 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert(taskStarted?.type === "task.started");
       assert.equal(taskStarted.payload.title, "reviewer");
       assert.equal(taskStarted.payload.role, "codex");
-      assert.equal(taskStarted.payload.taskId, "mock-pi-session:sa-1");
+      assert.match(taskStarted.payload.taskId, /^mock-pi-session:[^:]+:sa-1$/);
       assert.deepEqual(taskStarted.payload.contextUsage, {
         usedTokens: 0,
         maxTokens: 100_000,
@@ -126,6 +126,48 @@ it.layer(testLayer)("PiAdapter", (it) => {
         totalProcessedTokens: 10_000,
         compactsAutomatically: true,
       });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("namespaces reused extension subagent ids per Pi process", () =>
+    Effect.gen(function* () {
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({ T3_PI_RPC_EMIT_SUBAGENT: "1" }),
+      );
+      const firstAdapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const secondAdapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const firstEvents: Array<ProviderRuntimeEvent> = [];
+      const secondEvents: Array<ProviderRuntimeEvent> = [];
+      const firstFiber = yield* firstAdapter.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => firstEvents.push(event))),
+        Effect.forkChild,
+      );
+      const secondFiber = yield* secondAdapter.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => secondEvents.push(event))),
+        Effect.forkChild,
+      );
+      const threadId = ThreadId.make("pi-rpc-restarted-thread");
+      const startInput = {
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* firstAdapter.startSession(startInput);
+      yield* secondAdapter.startSession(startInput);
+      yield* firstAdapter.sendTurn({ threadId, input: "first process" });
+      yield* secondAdapter.sendTurn({ threadId, input: "second process" });
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)));
+      yield* Fiber.interrupt(firstFiber);
+      yield* Fiber.interrupt(secondFiber);
+
+      const firstStarted = firstEvents.find((event) => event.type === "task.started");
+      const secondStarted = secondEvents.find((event) => event.type === "task.started");
+      assert(firstStarted?.type === "task.started");
+      assert(secondStarted?.type === "task.started");
+      assert.match(firstStarted.payload.taskId, /^mock-pi-session:[^:]+:sa-1$/);
+      assert.match(secondStarted.payload.taskId, /^mock-pi-session:[^:]+:sa-1$/);
+      assert.notEqual(firstStarted.payload.taskId, secondStarted.payload.taskId);
     }).pipe(Effect.scoped),
   );
 
@@ -167,8 +209,8 @@ it.layer(testLayer)("PiAdapter", (it) => {
 
       const taskStarts = events.filter((event) => event.type === "task.started");
       assert.equal(taskStarts.length, 2);
-      const coordinator = taskStarts.find(
-        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock",
+      const coordinator = taskStarts.find((event) =>
+        event.payload.taskId.endsWith(":workflow:wf-mock"),
       );
       assert(coordinator?.type === "task.started");
       assert.equal(coordinator.payload.taskType, "local_workflow");
@@ -177,8 +219,8 @@ it.layer(testLayer)("PiAdapter", (it) => {
       assert.equal(coordinator.payload.phaseTitle, "Review");
       assert.equal(coordinator.payload.phaseIndex, 0);
 
-      const child = taskStarts.find(
-        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock:wf:1",
+      const child = taskStarts.find((event) =>
+        event.payload.taskId.endsWith(":workflow:wf-mock:wf:1"),
       );
       assert(child?.type === "task.started");
       assert.equal(child.payload.role, "codex");
