@@ -48,15 +48,15 @@ describe("buildInitialPiProviderSnapshot", () => {
 });
 
 it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
-  it.effect("requires the pi-acp adapter", () =>
+  it.effect("requires the Pi executable", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkPiProviderStatus(
-        decodePiSettings({ binaryPath: "/definitely/not/installed/pi-acp" }),
+        decodePiSettings({ piBinaryPath: "/definitely/not/installed/pi" }),
       );
 
       expect(snapshot.installed).toBe(false);
       expect(snapshot.status).toBe("error");
-      expect(snapshot.message).toContain("pi-acp");
+      expect(snapshot.message).toContain("Pi (`pi`)");
     }),
   );
 
@@ -66,9 +66,7 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-pi-provider-" });
-        const adapterPath = path.join(dir, "pi-acp");
         const piPath = path.join(dir, "pi");
-        yield* fs.writeFileString(adapterPath, "#!/bin/sh\nexit 0\n");
         yield* fs.writeFileString(
           piPath,
           [
@@ -84,12 +82,9 @@ it.layer(NodeServices.layer)("checkPiProviderStatus", (it) => {
             "",
           ].join("\n"),
         );
-        yield* fs.chmod(adapterPath, 0o755);
         yield* fs.chmod(piPath, 0o755);
 
-        const snapshot = yield* checkPiProviderStatus(
-          decodePiSettings({ binaryPath: adapterPath, piBinaryPath: piPath }),
-        );
+        const snapshot = yield* checkPiProviderStatus(decodePiSettings({ piBinaryPath: piPath }));
 
         expect(snapshot.installed).toBe(true);
         expect(snapshot.status).toBe("ready");

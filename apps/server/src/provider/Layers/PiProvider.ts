@@ -6,7 +6,7 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -34,7 +34,7 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
-const REASONING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const REASONING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function titleCase(value: string): string {
   return value
@@ -158,27 +158,6 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
 
   if (!piSettings.enabled) {
     return yield* buildInitialPiProviderSnapshot(piSettings);
-  }
-
-  const adapterPath = piSettings.binaryPath || "pi-acp";
-  const adapterAvailable = yield* resolveCommandPath(adapterPath, { env: environment }).pipe(
-    Effect.as(true),
-    Effect.orElseSucceed(() => false),
-  );
-  if (!adapterAvailable) {
-    return buildServerProvider({
-      presentation: PI_PRESENTATION,
-      enabled: true,
-      checkedAt,
-      models: fallbackModels,
-      probe: {
-        installed: false,
-        version: null,
-        status: "error",
-        auth: { status: "unknown" },
-        message: "The Pi ACP adapter (`pi-acp`) is not installed or not on PATH.",
-      },
-    });
   }
 
   const versionResult = yield* runPiCommand(piSettings, ["--version"], environment).pipe(

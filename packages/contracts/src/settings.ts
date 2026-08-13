@@ -403,17 +403,14 @@ export const PiSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    // Retained for settings-file compatibility with the former ACP integration.
     binaryPath: makeBinaryPathSetting("pi-acp").pipe(
-      Schema.annotateKey({
-        title: "ACP adapter path",
-        description: "Path to the pi-acp executable.",
-        providerSettingsForm: { placeholder: "pi-acp", clearWhenEmpty: "omit" },
-      }),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     piBinaryPath: makeBinaryPathSetting("pi").pipe(
       Schema.annotateKey({
         title: "Pi path",
-        description: "Path to the Pi coding agent executable used by pi-acp.",
+        description: "Path to the Pi coding agent executable.",
         providerSettingsForm: { placeholder: "pi", clearWhenEmpty: "omit" },
       }),
     ),
@@ -423,7 +420,7 @@ export const PiSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "piBinaryPath"],
+    order: ["piBinaryPath"],
   },
 );
 export type PiSettings = typeof PiSettings.Type;

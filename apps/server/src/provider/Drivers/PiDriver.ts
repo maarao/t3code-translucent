@@ -1,9 +1,4 @@
-import {
-  type CursorSettings,
-  PiSettings,
-  ProviderDriverKind,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -14,11 +9,10 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { makeCursorTextGeneration } from "../../textGeneration/CursorTextGeneration.ts";
+import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeCursorAdapter } from "../Layers/CursorAdapter.ts";
+import { makePiAdapter } from "../Layers/PiAdapter.ts";
 import { buildInitialPiProviderSnapshot, checkPiProviderStatus } from "../Layers/PiProvider.ts";
-import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -43,7 +37,7 @@ const DRIVER_KIND = ProviderDriverKind.make("pi");
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeManualOnlyProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
-    packageName: "pi-acp",
+    packageName: "@earendil-works/pi-coding-agent",
   }),
 );
 
@@ -53,7 +47,6 @@ export type PiDriverEnv =
   | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
-  | ProviderEventLoggers
   | ServerConfig
   | ServerSettingsService;
 
@@ -73,15 +66,6 @@ const withInstanceIdentity =
     continuation: { groupKey: input.continuationGroupKey },
   });
 
-function cursorSettingsForPi(config: PiSettings): CursorSettings {
-  return {
-    enabled: config.enabled,
-    binaryPath: config.binaryPath,
-    apiEndpoint: "",
-    customModels: config.customModels,
-  };
-}
-
 export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
@@ -96,11 +80,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
-      const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = {
-        ...mergeProviderInstanceEnvironment(environment),
-        PI_ACP_PI_COMMAND: config.piBinaryPath,
-      } satisfies NodeJS.ProcessEnv;
+      const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -112,22 +92,16 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies PiSettings;
-      const cursorSettings = cursorSettingsForPi(effectiveConfig);
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
+        binaryPath: effectiveConfig.piBinaryPath,
         env: processEnv,
       });
 
-      const adapter = yield* makeCursorAdapter(cursorSettings, {
-        provider: DRIVER_KIND,
-        mapRuntimeModeToAcpMode: false,
-        finalizeOutOfBandAssistantOutput: true,
-        suppressPiAcpStartupInfo: true,
+      const adapter = yield* makePiAdapter(effectiveConfig, {
         environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, processEnv);
+      const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
       const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv).pipe(
         Effect.map(stampIdentity),
