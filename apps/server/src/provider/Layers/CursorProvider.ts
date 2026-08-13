@@ -151,6 +151,8 @@ function flattenSessionConfigSelectOptions(
 function normalizeCursorReasoningValue(value: string | null | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase();
   switch (normalized) {
+    case "off":
+    case "minimal":
     case "low":
     case "medium":
     case "high":
@@ -172,13 +174,17 @@ function getCursorConfigOptionCategory(option: EffectAcpSchema.SessionConfigOpti
 function isCursorEffortConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
   const id = option.id.trim().toLowerCase();
   const name = option.name.trim().toLowerCase();
+  const category = getCursorConfigOptionCategory(option);
   return (
     id === "effort" ||
     id === "reasoning" ||
+    id === "thought_level" ||
     name === "effort" ||
     name === "reasoning" ||
+    name === "thinking" ||
     name.includes("effort") ||
-    name.includes("reasoning")
+    name.includes("reasoning") ||
+    category === "thought_level"
   );
 }
 
