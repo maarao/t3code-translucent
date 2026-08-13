@@ -62,7 +62,9 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
     readonly modelSelection: ModelSelection;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
-      const scope = yield* Scope.make("sequential");
+      const scope = yield* Effect.acquireRelease(Scope.make("sequential"), (scope) =>
+        Scope.close(scope, Exit.void),
+      );
       const outputRef = yield* Ref.make("");
       const settled = yield* Deferred.make<void>();
       const runtime = yield* makePiRpcProcess({
@@ -148,8 +150,6 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         }),
       );
       const rawResult = (yield* Ref.get(outputRef)).trim();
-      yield* runtime.stop;
-      yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
       if (!rawResult) {
         return yield* new TextGenerationError({
           operation: input.operation,
@@ -170,6 +170,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         ),
       );
     }).pipe(
+      Effect.scoped,
       Effect.mapError((cause) =>
         isTextGenerationError(cause)
           ? cause

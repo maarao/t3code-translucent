@@ -5,6 +5,15 @@ import * as NodeFS from "node:fs";
 let buffer = "";
 let promptCount = 0;
 const requestLogPath = process.env.T3_PI_RPC_REQUEST_LOG_PATH;
+const exitLogPath = process.env.T3_PI_RPC_EXIT_LOG_PATH;
+
+function recordExit(signal: string) {
+  if (exitLogPath) NodeFS.appendFileSync(exitLogPath, `${signal}\n`, "utf8");
+  process.exit(0);
+}
+
+process.once("SIGINT", () => recordExit("SIGINT"));
+process.once("SIGTERM", () => recordExit("SIGTERM"));
 
 function send(message: unknown) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
