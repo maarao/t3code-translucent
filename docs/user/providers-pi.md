@@ -25,6 +25,6 @@ Subagents launched by Pi's `subagent_spawn` extension appear in T3 Code's Agents
 completion, harness, model, and final summary are retained even when they outlive the turn that
 spawned them. Blocking workflow runs also show their current phase and completion progress, with each
 workflow child listed under its coordinator with the child's harness, model, phase, status, latest
-summary, and remaining context. The main thread's composer also shows its remaining context. Direct
-subagents update their remaining context when Pi reports a snapshot or final result. Live child
-transcripts and takeover controls remain available only in Pi's terminal UI.
+summary, and remaining context. Direct subagents update their remaining context when Pi reports a
+snapshot or final result. Live child transcripts and takeover controls remain available only in Pi's
+terminal UI.

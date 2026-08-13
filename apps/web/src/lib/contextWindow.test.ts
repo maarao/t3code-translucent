@@ -70,9 +70,7 @@ describe("contextWindow", () => {
     expect(snapshot).toMatchObject({
       usedTokens: 0,
       maxTokens: 100_000,
-      remainingTokens: 100_000,
       usedPercentage: 0,
-      remainingPercentage: 100,
     });
   });
 
