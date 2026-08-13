@@ -23,4 +23,7 @@ TUI components do not render in T3 Code.
 
 Subagents launched by Pi's `subagent_spawn` extension appear in T3 Code's Agents panel. Their start,
 completion, harness, model, and final summary are retained even when they outlive the turn that
-spawned them. Live child transcripts and takeover controls remain available only in Pi's terminal UI.
+spawned them. Blocking workflow runs also show their current phase and completion progress, with each
+workflow child listed under its coordinator with the child's harness, model, phase, status, and latest
+summary.
+Live child transcripts and takeover controls remain available only in Pi's terminal UI.

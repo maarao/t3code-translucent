@@ -45,6 +45,10 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
+const WORKFLOW_TEXT_MAX_LENGTH = 4_000;
+const WORKFLOW_PHASE_MAX_COUNT = 32;
+const WORKFLOW_AGENT_MAX_COUNT = 100;
+const SETTLED_TASK_MAX_COUNT = 2_048;
 
 interface PiResumeCursor {
   readonly schemaVersion: typeof PI_RESUME_VERSION;
@@ -66,6 +70,21 @@ interface PiTurnRecord {
   userEntryId?: string;
 }
 
+interface TaskMetadata {
+  readonly title: string;
+  readonly role?: string;
+  readonly model?: string;
+  readonly taskType?: string;
+  readonly workflowName?: string;
+  readonly agentIndex?: number;
+  readonly phaseIndex?: number;
+  readonly phaseTitle?: string;
+  readonly phases?: ReadonlyArray<{ readonly index: number; readonly title: string }>;
+  readonly parentAgentId?: string;
+  readonly runHandles?: { readonly runId: string };
+  readonly timelineBypass?: boolean;
+}
+
 interface PiSessionContext {
   readonly threadId: ThreadId;
   readonly process: PiRpcProcess;
@@ -76,11 +95,12 @@ interface PiSessionContext {
   readonly turns: Array<PiTurnRecord>;
   readonly pendingDialogs: Map<ApprovalRequestId, PendingDialog>;
   readonly runningTaskIds: Set<string>;
+  readonly settledTaskIds: Set<string>;
+  readonly taskFingerprints: Map<string, string>;
+  readonly workflowItemFingerprints: Map<string, string>;
+  readonly workflowToolRuns: Map<string, string>;
   readonly taskTurnIds: Map<string, TurnId | undefined>;
-  readonly taskMetadata: Map<
-    string,
-    { readonly title: string; readonly role?: string; readonly model?: string }
-  >;
+  readonly taskMetadata: Map<string, TaskMetadata>;
   readonly taskNamespace: string;
   activeTurnId: TurnId | undefined;
   syntheticTurn: boolean;
@@ -102,6 +122,11 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function workflowText(value: unknown) {
+  const text = stringValue(value)?.trim();
+  return text ? text.slice(0, WORKFLOW_TEXT_MAX_LENGTH) : undefined;
 }
 
 function stringArray(value: unknown) {
@@ -169,6 +194,97 @@ function messageContentText(message: Readonly<Record<string, unknown>>) {
 
 function resultDetails(value: unknown) {
   return record(record(value)?.details);
+}
+
+function resultText(value: unknown) {
+  const content = record(value)?.content;
+  if (!Array.isArray(content)) return undefined;
+  const text = content.flatMap((entry) => {
+    const part = record(entry);
+    return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+  });
+  return text.length > 0 ? text.join("\n").trim() || undefined : undefined;
+}
+
+function workflowRunId(value: unknown) {
+  return workflowText(resultDetails(value)?.runId)?.slice(0, 256);
+}
+
+function workflowPresentation(value: unknown) {
+  const details = resultDetails(value);
+  if (!details || typeof details.runId !== "string" || !Array.isArray(details.agents)) {
+    return {};
+  }
+  const text = workflowText(resultText(value));
+  return {
+    ...(text ? { detail: text } : {}),
+    data: {
+      runId: details.runId,
+      ...(workflowText(details.name) ? { name: workflowText(details.name) } : {}),
+      ...(workflowText(details.status) ? { status: workflowText(details.status) } : {}),
+      ...(workflowText(details.currentPhase)
+        ? { currentPhase: workflowText(details.currentPhase) }
+        : {}),
+      phases: Array.isArray(details.phases)
+        ? details.phases.slice(0, WORKFLOW_PHASE_MAX_COUNT).flatMap((rawPhase) => {
+            const phase = record(rawPhase);
+            const title = workflowText(phase?.title);
+            return title ? [{ title }] : [];
+          })
+        : [],
+      agents: details.agents.slice(0, WORKFLOW_AGENT_MAX_COUNT).flatMap((rawAgent) => {
+        const agent = record(rawAgent);
+        const index = numberValue(agent?.index);
+        if (!agent || index === undefined) return [];
+        return [
+          {
+            index,
+            ...(workflowText(agent.label) ? { label: workflowText(agent.label) } : {}),
+            ...(workflowText(agent.state) ? { state: workflowText(agent.state) } : {}),
+            ...(workflowText(agent.harness) ? { harness: workflowText(agent.harness) } : {}),
+            ...(workflowText(agent.model) ? { model: workflowText(agent.model) } : {}),
+            ...(workflowText(agent.phase) ? { phase: workflowText(agent.phase) } : {}),
+            ...(workflowText(agent.preview) ? { preview: workflowText(agent.preview) } : {}),
+            ...(workflowText(agent.error) ? { error: workflowText(agent.error) } : {}),
+          },
+        ];
+      }),
+    },
+  };
+}
+
+function workflowFingerprint(value: unknown) {
+  const details = resultDetails(value);
+  if (!details || !Array.isArray(details.agents)) return workflowText(resultText(value)) ?? "";
+  const phases = Array.isArray(details.phases)
+    ? details.phases
+        .slice(0, WORKFLOW_PHASE_MAX_COUNT)
+        .map((rawPhase) => workflowText(record(rawPhase)?.title) ?? "")
+    : [];
+  const agents = details.agents.slice(0, WORKFLOW_AGENT_MAX_COUNT).flatMap((rawAgent) => {
+    const agent = record(rawAgent);
+    if (!agent) return [];
+    return [
+      [
+        numberValue(agent.index) ?? "",
+        workflowText(agent.label) ?? "",
+        workflowText(agent.state) ?? "",
+        workflowText(agent.harness) ?? "",
+        workflowText(agent.phase) ?? "",
+        workflowText(agent.model) ?? "",
+        workflowText(agent.preview) ?? "",
+        workflowText(agent.error) ?? "",
+      ].join("\u001e"),
+    ];
+  });
+  return [
+    workflowText(resultText(value)) ?? "",
+    workflowText(details.name) ?? "",
+    workflowText(details.status) ?? "",
+    workflowText(details.currentPhase) ?? "",
+    ...phases,
+    ...agents,
+  ].join("\u001f");
 }
 
 function subagentStatus(value: unknown) {
@@ -317,6 +433,7 @@ export function makePiAdapter(
       summary?: string,
     ) {
       ctx.runningTaskIds.delete(task.id);
+      ctx.taskFingerprints.delete(task.id);
       const taskTurnId = ctx.taskTurnIds.get(task.id);
       const metadata = ctx.taskMetadata.get(task.id);
       ctx.taskTurnIds.delete(task.id);
@@ -340,8 +457,18 @@ export function makePiAdapter(
           ...(displayTitle ? { title: displayTitle } : {}),
           ...(metadata?.role ? { role: metadata.role } : {}),
           ...(metadata?.model ? { model: metadata.model } : {}),
+          ...(metadata?.workflowName ? { workflowName: metadata.workflowName } : {}),
+          ...(metadata?.agentIndex !== undefined ? { agentIndex: metadata.agentIndex } : {}),
+          ...(metadata?.phaseIndex !== undefined ? { phaseIndex: metadata.phaseIndex } : {}),
+          ...(metadata?.phaseTitle ? { phaseTitle: metadata.phaseTitle } : {}),
+          ...(metadata?.phases ? { phases: metadata.phases } : {}),
+          ...(metadata?.parentAgentId ? { parentAgentId: metadata.parentAgentId } : {}),
+          ...(metadata?.runHandles ? { runHandles: metadata.runHandles } : {}),
+          ...(metadata?.timelineBypass !== undefined
+            ? { timelineBypass: metadata.timelineBypass }
+            : {}),
           ...(summary?.trim() ? { summary: summary.trim() } : {}),
-          taskType: "subagent",
+          taskType: metadata?.taskType ?? "subagent",
           agentKind: "agent",
         },
       });
@@ -396,6 +523,240 @@ export function makePiAdapter(
         if (!id || !status || status === "running" || !ctx.runningTaskIds.has(id)) continue;
         const title = stringValue(entry?.title);
         yield* emitTaskCompleted(ctx, { id, ...(title ? { title } : {}), status });
+      }
+    });
+
+    const markTaskSettled = (ctx: PiSessionContext, id: string) => {
+      ctx.settledTaskIds.add(id);
+      if (ctx.settledTaskIds.size <= SETTLED_TASK_MAX_COUNT) return;
+      const oldest = ctx.settledTaskIds.values().next().value;
+      if (oldest !== undefined) ctx.settledTaskIds.delete(oldest);
+    };
+
+    const runningTasksChildrenFirst = (ctx: PiSessionContext) =>
+      [...ctx.runningTaskIds].sort((left, right) => {
+        const leftIsChild = ctx.taskMetadata.get(left)?.parentAgentId !== undefined;
+        const rightIsChild = ctx.taskMetadata.get(right)?.parentAgentId !== undefined;
+        return Number(rightIsChild) - Number(leftIsChild);
+      });
+
+    const settleWorkflowTasks = Effect.fn("PiAdapter.settleWorkflowTasks")(function* (
+      ctx: PiSessionContext,
+      runId: string,
+      status: "error" | "stopped",
+      summary: string,
+    ) {
+      const coordinatorId = `workflow:${runId}`;
+      const childPrefix = `${coordinatorId}:`;
+      const childIds = [...ctx.runningTaskIds].filter((id) => id.startsWith(childPrefix));
+      for (const id of childIds) {
+        yield* emitTaskCompleted(ctx, { id, status }, summary);
+        markTaskSettled(ctx, id);
+      }
+      if (ctx.runningTaskIds.has(coordinatorId)) {
+        yield* emitTaskCompleted(ctx, { id: coordinatorId, status }, summary);
+        markTaskSettled(ctx, coordinatorId);
+      }
+    });
+
+    const handleWorkflowResult = Effect.fn("PiAdapter.handleWorkflowResult")(function* (
+      ctx: PiSessionContext,
+      result: unknown,
+    ) {
+      const details = resultDetails(result);
+      const runId = workflowRunId(result);
+      if (!runId || !Array.isArray(details?.agents)) return;
+      const workflowName = workflowText(details.name) ?? runId;
+      const phases = Array.isArray(details.phases)
+        ? details.phases.slice(0, WORKFLOW_PHASE_MAX_COUNT).flatMap((rawPhase, index) => {
+            const phase = record(rawPhase);
+            const title = workflowText(phase?.title);
+            return title ? [{ index, title }] : [];
+          })
+        : [];
+
+      const coordinatorId = `workflow:${runId}`;
+      const coordinatorTaskId = `${ctx.taskNamespace}:${coordinatorId}`;
+      const visibleAgents = details.agents.slice(0, WORKFLOW_AGENT_MAX_COUNT);
+      const completedAgents = visibleAgents.filter((rawAgent) => {
+        const state = workflowText(record(rawAgent)?.state);
+        return state === "done" || state === "error";
+      }).length;
+      const currentPhase = workflowText(details.currentPhase);
+      const coordinatorSummary = `${completedAgents}/${visibleAgents.length} agents${
+        currentPhase ? ` · ${currentPhase}` : ""
+      }`;
+      const coordinatorMetadata: TaskMetadata = {
+        title: workflowName,
+        role: "workflow",
+        taskType: "local_workflow",
+        workflowName,
+        ...(phases.length > 0 ? { phases } : {}),
+        runHandles: { runId },
+      };
+      const workflowStatus = workflowText(details.status);
+      const workflowIsTerminal =
+        workflowStatus === "completed" ||
+        workflowStatus === "failed" ||
+        workflowStatus === "aborted";
+      if (!ctx.settledTaskIds.has(coordinatorId)) {
+        if (!ctx.runningTaskIds.has(coordinatorId)) {
+          ctx.runningTaskIds.add(coordinatorId);
+          ctx.taskTurnIds.set(coordinatorId, ctx.activeTurnId);
+          ctx.taskMetadata.set(coordinatorId, coordinatorMetadata);
+          yield* publish({
+            type: "task.started",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: ctx.threadId,
+            turnId: ctx.activeTurnId,
+            payload: {
+              taskId: RuntimeTaskId.make(coordinatorTaskId),
+              description: workflowText(details.description) ?? workflowName,
+              ...coordinatorMetadata,
+              agentKind: "agent",
+            },
+          });
+        }
+        if (!workflowIsTerminal && ctx.taskFingerprints.get(coordinatorId) !== coordinatorSummary) {
+          ctx.taskFingerprints.set(coordinatorId, coordinatorSummary);
+          yield* publish({
+            type: "task.progress",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: ctx.threadId,
+            turnId: ctx.activeTurnId,
+            payload: {
+              taskId: RuntimeTaskId.make(coordinatorTaskId),
+              description: workflowName,
+              summary: coordinatorSummary,
+              status: "running",
+              ...coordinatorMetadata,
+              agentKind: "agent",
+            },
+          });
+        }
+      }
+
+      for (const rawAgent of visibleAgents) {
+        const agent = record(rawAgent);
+        const index = numberValue(agent?.index);
+        const state = workflowText(agent?.state);
+        if (!agent || index === undefined || !Number.isInteger(index) || index < 0 || !state)
+          continue;
+        const id = `workflow:${runId}:${index}`;
+        if (ctx.settledTaskIds.has(id)) continue;
+        const title = workflowText(agent.label) ?? `Agent ${index}`;
+        const role = workflowText(agent.harness) ?? "workflow";
+        const model = workflowText(agent.model);
+        const phaseTitle = workflowText(agent.phase);
+        const phaseIndex = phaseTitle
+          ? phases.find((phase) => phase.title === phaseTitle)?.index
+          : undefined;
+        const metadata: TaskMetadata = {
+          title,
+          role,
+          ...(model ? { model } : {}),
+          taskType: "local_agent",
+          workflowName,
+          agentIndex: index,
+          ...(phaseIndex !== undefined ? { phaseIndex } : {}),
+          ...(phaseTitle ? { phaseTitle } : {}),
+          ...(phases.length > 0 ? { phases } : {}),
+          parentAgentId: coordinatorTaskId,
+          runHandles: { runId },
+          timelineBypass: true,
+        };
+
+        if (!ctx.runningTaskIds.has(id)) {
+          ctx.runningTaskIds.add(id);
+          ctx.taskTurnIds.set(id, ctx.activeTurnId);
+          ctx.taskMetadata.set(id, metadata);
+          yield* publish({
+            type: "task.started",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: ctx.threadId,
+            turnId: ctx.activeTurnId,
+            payload: {
+              taskId: RuntimeTaskId.make(`${ctx.taskNamespace}:${id}`),
+              description: title,
+              ...metadata,
+              agentKind: "agent",
+            },
+          });
+        } else {
+          ctx.taskMetadata.set(id, metadata);
+        }
+
+        const preview = workflowText(agent.preview);
+        if (state === "running") {
+          const fingerprint = [
+            state,
+            title,
+            role,
+            phaseTitle ?? "",
+            model ?? "",
+            preview ?? "",
+          ].join("\u001f");
+          if (ctx.taskFingerprints.get(id) === fingerprint) continue;
+          ctx.taskFingerprints.set(id, fingerprint);
+          yield* publish({
+            type: "task.progress",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: ctx.threadId,
+            turnId: ctx.activeTurnId,
+            payload: {
+              taskId: RuntimeTaskId.make(`${ctx.taskNamespace}:${id}`),
+              description: title,
+              ...(preview ? { summary: preview } : {}),
+              status: "running",
+              ...metadata,
+              agentKind: "agent",
+            },
+          });
+          continue;
+        }
+
+        if (state === "done" || state === "error") {
+          yield* emitTaskCompleted(ctx, { id, title, status: state }, preview);
+          markTaskSettled(ctx, id);
+        }
+      }
+
+      if (workflowIsTerminal) {
+        const unfinishedStatus = workflowStatus === "failed" ? "error" : "stopped";
+        const unfinishedSummary = workflowText(details.error) ?? coordinatorSummary;
+        const unfinishedChildIds = [...ctx.runningTaskIds].filter((id) =>
+          id.startsWith(`${coordinatorId}:`),
+        );
+        for (const id of unfinishedChildIds) {
+          yield* emitTaskCompleted(ctx, { id, status: unfinishedStatus }, unfinishedSummary);
+          markTaskSettled(ctx, id);
+        }
+      }
+
+      if (workflowIsTerminal && !ctx.settledTaskIds.has(coordinatorId)) {
+        yield* emitTaskCompleted(
+          ctx,
+          {
+            id: coordinatorId,
+            title: workflowName,
+            status:
+              workflowStatus === "completed"
+                ? "done"
+                : workflowStatus === "aborted"
+                  ? "stopped"
+                  : "error",
+          },
+          workflowText(details.error) ?? coordinatorSummary,
+        );
+        markTaskSettled(ctx, coordinatorId);
       }
     });
 
@@ -551,6 +912,16 @@ export function makePiAdapter(
         const toolCallId = stringValue(event.toolCallId);
         const toolName = stringValue(event.toolName) ?? "tool";
         if (!toolCallId || toolName === "subagent_spawn") return;
+        const presentation =
+          toolName === "workflow" ? workflowPresentation(event.partialResult) : {};
+        if (toolName === "workflow") {
+          const runId = workflowRunId(event.partialResult);
+          if (runId) ctx.workflowToolRuns.set(toolCallId, runId);
+          yield* handleWorkflowResult(ctx, event.partialResult);
+          const fingerprint = workflowFingerprint(event.partialResult);
+          if (ctx.workflowItemFingerprints.get(toolCallId) === fingerprint) return;
+          ctx.workflowItemFingerprints.set(toolCallId, fingerprint);
+        }
         yield* publish({
           type: "item.updated",
           ...(yield* makeStamp()),
@@ -563,6 +934,7 @@ export function makePiAdapter(
             itemType: canonicalToolItemType(toolName),
             status: "inProgress",
             title: toolName,
+            ...presentation,
           },
         });
         return;
@@ -572,6 +944,20 @@ export function makePiAdapter(
         const toolName = stringValue(event.toolName) ?? "tool";
         if (!toolCallId) return;
         yield* handleSubagentToolResult(ctx, toolName, event.result);
+        if (toolName === "workflow") {
+          const knownRunId = workflowRunId(event.result) ?? ctx.workflowToolRuns.get(toolCallId);
+          yield* handleWorkflowResult(ctx, event.result);
+          if (event.isError === true && knownRunId) {
+            yield* settleWorkflowTasks(
+              ctx,
+              knownRunId,
+              "error",
+              resultText(event.result) ?? "Workflow failed.",
+            );
+          }
+          ctx.workflowToolRuns.delete(toolCallId);
+          ctx.workflowItemFingerprints.delete(toolCallId);
+        }
         if (toolName === "subagent_spawn") return;
         yield* publish({
           type: "item.completed",
@@ -585,6 +971,7 @@ export function makePiAdapter(
             itemType: canonicalToolItemType(toolName),
             status: event.isError === true ? "failed" : "completed",
             title: toolName,
+            ...(toolName === "workflow" ? workflowPresentation(event.result) : {}),
           },
         });
         return;
@@ -727,7 +1114,7 @@ export function makePiAdapter(
           Effect.ignore,
         );
       }
-      for (const taskId of ctx.runningTaskIds) {
+      for (const taskId of runningTasksChildrenFirst(ctx)) {
         yield* emitTaskCompleted(
           ctx,
           { id: taskId, status: "stopped" },
@@ -867,6 +1254,10 @@ export function makePiAdapter(
           turns: [],
           pendingDialogs: new Map(),
           runningTaskIds: new Set(),
+          settledTaskIds: new Set(),
+          taskFingerprints: new Map(),
+          workflowItemFingerprints: new Map(),
+          workflowToolRuns: new Map(),
           taskTurnIds: new Map(),
           taskMetadata: new Map(),
           taskNamespace: sessionId,
@@ -890,7 +1281,7 @@ export function makePiAdapter(
               if (ctx.activeTurnCompletion) {
                 yield* Deferred.fail(ctx.activeTurnCompletion, cause).pipe(Effect.ignore);
               }
-              for (const taskId of ctx.runningTaskIds) {
+              for (const taskId of runningTasksChildrenFirst(ctx)) {
                 yield* emitTaskCompleted(
                   ctx,
                   { id: taskId, status: "error" },

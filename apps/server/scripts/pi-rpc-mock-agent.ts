@@ -116,6 +116,100 @@ function handle(request: Record<string, unknown>) {
           placeholder: "Type it",
         });
       }
+      if (process.env.T3_PI_RPC_EMIT_WORKFLOW === "1") {
+        const workflowBase = {
+          runId: "wf-mock",
+          name: "Mock workflow",
+          description: "Exercise workflow visibility",
+          background: false,
+          startedAt: 1,
+          phases: [{ title: "Review", detail: "Inspect code" }, { title: "Report" }],
+        };
+        const usage = {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 0,
+        };
+        send({
+          type: "tool_execution_start",
+          toolCallId: "workflow-tool",
+          toolName: "workflow",
+          args: { script: "return {}" },
+        });
+        const workflowUpdate = {
+          type: "tool_execution_update",
+          toolCallId: "workflow-tool",
+          toolName: "workflow",
+          partialResult: {
+            content: [{ type: "text", text: "workflow Mock workflow: 0/1 agents · Review" }],
+            details: {
+              ...workflowBase,
+              status: "running",
+              currentPhase: "Review",
+              agents: [
+                {
+                  index: 1,
+                  label: "Reviewer",
+                  phase: "Review",
+                  state: "running",
+                  harness: "codex",
+                  model: "gpt-test",
+                  startedAt: 2,
+                  preview: "Inspecting adapter",
+                  usage,
+                  transcript: [],
+                },
+              ],
+            },
+          },
+        };
+        send(workflowUpdate);
+        send(workflowUpdate);
+        if (process.env.T3_PI_RPC_WORKFLOW_ERROR === "1") {
+          send({
+            type: "tool_execution_end",
+            toolCallId: "workflow-tool",
+            toolName: "workflow",
+            result: { content: [{ type: "text", text: "Workflow crashed" }] },
+            isError: true,
+          });
+        } else {
+          send({
+            type: "tool_execution_end",
+            toolCallId: "workflow-tool",
+            toolName: "workflow",
+            result: {
+              content: [{ type: "text", text: "Workflow completed: Mock workflow" }],
+              details: {
+                ...workflowBase,
+                status: "completed",
+                currentPhase: "Report",
+                finishedAt: 3,
+                agents: [
+                  {
+                    index: 1,
+                    label: "Reviewer",
+                    phase: "Review",
+                    state: "done",
+                    harness: "codex",
+                    model: "gpt-test",
+                    startedAt: 2,
+                    finishedAt: 3,
+                    preview: "Review complete",
+                    usage,
+                    transcript: [],
+                  },
+                ],
+                result: { ok: true },
+              },
+            },
+            isError: false,
+          });
+        }
+      }
       send({ type: "message_end", message: { role: "assistant", timestamp: promptCount } });
       send({ type: "agent_end", messages: [], willRetry: false });
       send({ type: "agent_settled" });

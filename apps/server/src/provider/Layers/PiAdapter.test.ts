@@ -103,6 +103,127 @@ it.layer(testLayer)("PiAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("maps workflow progress and child agents into T3 runtime events", () =>
+    Effect.gen(function* () {
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({ T3_PI_RPC_EMIT_WORKFLOW: "1" }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+        Effect.forkChild,
+      );
+      const threadId = ThreadId.make("pi-rpc-workflow-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "run workflow" });
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(eventFiber);
+
+      const workflowItems = events.filter(
+        (event) => event.type === "item.updated" && event.itemId === "workflow-tool",
+      );
+      assert.equal(workflowItems.length, 1);
+      const workflowItem = workflowItems[0];
+      assert(workflowItem?.type === "item.updated");
+      assert.equal(workflowItem.payload.detail, "workflow Mock workflow: 0/1 agents · Review");
+      assert(
+        typeof workflowItem.payload.data === "object" &&
+          workflowItem.payload.data !== null &&
+          "runId" in workflowItem.payload.data,
+      );
+      assert.equal(workflowItem.payload.data.runId, "wf-mock");
+
+      const taskStarts = events.filter((event) => event.type === "task.started");
+      assert.equal(taskStarts.length, 2);
+      const coordinator = taskStarts.find(
+        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock",
+      );
+      assert(coordinator?.type === "task.started");
+      assert.equal(coordinator.payload.taskType, "local_workflow");
+      assert.equal(coordinator.payload.workflowName, "Mock workflow");
+      assert.equal(coordinator.payload.runHandles?.runId, "wf-mock");
+
+      const child = taskStarts.find(
+        (event) => event.payload.taskId === "mock-pi-session:workflow:wf-mock:1",
+      );
+      assert(child?.type === "task.started");
+      assert.equal(child.payload.role, "codex");
+      assert.equal(child.payload.model, "gpt-test");
+      assert.equal(child.payload.taskType, "local_agent");
+      assert.equal(child.payload.phaseTitle, "Review");
+      assert.equal(child.payload.phaseIndex, 0);
+      assert.equal(child.payload.parentAgentId, coordinator.payload.taskId);
+      assert.equal(child.payload.timelineBypass, true);
+
+      const taskProgress = events.filter((event) => event.type === "task.progress");
+      assert.equal(taskProgress.length, 2);
+      const childProgress = taskProgress.find(
+        (event) => event.payload.taskId === child.payload.taskId,
+      );
+      assert(childProgress?.type === "task.progress");
+      assert.equal(childProgress.payload.summary, "Inspecting adapter");
+
+      const completions = events.filter((event) => event.type === "task.completed");
+      assert.equal(completions.length, 2);
+      assert(
+        completions.some(
+          (event) =>
+            event.payload.taskId === coordinator.payload.taskId &&
+            event.payload.status === "completed",
+        ),
+      );
+      assert(
+        completions.some(
+          (event) =>
+            event.payload.taskId === child.payload.taskId &&
+            event.payload.summary === "Review complete",
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("settles workflow tasks when the workflow tool fails without details", () =>
+    Effect.gen(function* () {
+      const wrapper = yield* Effect.promise(() =>
+        makeMockPiWrapper({
+          T3_PI_RPC_EMIT_WORKFLOW: "1",
+          T3_PI_RPC_WORKFLOW_ERROR: "1",
+        }),
+      );
+      const adapter = yield* makePiAdapter(decodePiSettings({ piBinaryPath: wrapper }));
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+        Effect.forkChild,
+      );
+      const threadId = ThreadId.make("pi-rpc-failed-workflow-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "run failing workflow" });
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(eventFiber);
+
+      const completions = events.filter((event) => event.type === "task.completed");
+      assert.equal(completions.length, 2);
+      assert(
+        completions.every(
+          (event) =>
+            event.payload.status === "failed" && event.payload.summary === "Workflow crashed",
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("bridges free-text extension UI through T3 user input", () =>
     Effect.gen(function* () {
       const requestLog = NodePath.join(
