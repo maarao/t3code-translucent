@@ -11,6 +11,8 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       (() => {
+        const isElectron = window.desktopBridge !== undefined;
+        document.documentElement.classList.toggle("electron", isElectron);
         const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#0a0a0a";
         const CUSTOM_THEMES_STORAGE_KEY = "t3code:themes:v1";
@@ -375,7 +377,9 @@
               : isDark
                 ? DARK_BACKGROUND
                 : LIGHT_BACKGROUND;
-          document.documentElement.style.backgroundColor = chromeColor;
+          if (!isElectron) {
+            document.documentElement.style.backgroundColor = chromeColor;
+          }
           if (hasSelection) {
             const splashColors = customSplash ?? builtInSplash ?? fallbackSplash;
             for (const [name, value] of Object.entries(splashColors)) {
@@ -395,7 +399,9 @@
           delete document.documentElement.dataset.themeSelected;
           document.documentElement.classList.toggle("dark", prefersDark);
           const fallbackColor = prefersDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-          document.documentElement.style.backgroundColor = fallbackColor;
+          if (!isElectron) {
+            document.documentElement.style.backgroundColor = fallbackColor;
+          }
           setThemeColor(fallbackColor);
         }
       })();
@@ -420,6 +426,10 @@
         color: #f5f5f5;
       }
 
+      html.electron body {
+        background: transparent;
+      }
+
       #boot-shell {
         position: relative;
         overflow: hidden;
@@ -434,6 +444,10 @@
       html[data-theme-selected="true"] #boot-shell {
         background: var(--boot-background);
         color: var(--boot-foreground);
+      }
+
+      html.electron #boot-shell {
+        background: transparent;
       }
 
       #boot-shell-card {

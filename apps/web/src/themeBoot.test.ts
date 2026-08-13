@@ -31,6 +31,7 @@ const bootScript = (() => {
 
 type BootResult = {
   isDark: boolean;
+  isElectron: boolean;
   themeId: string | undefined;
   themeSelected: string | undefined;
   backgroundColor: string;
@@ -42,6 +43,7 @@ function runBootScript(options: {
   storage?: Record<string, string>;
   storageThrows?: boolean;
   prefersDark: boolean;
+  isElectron?: boolean;
 }): BootResult {
   const classes = new Set<string>();
   const bootVariables: Record<string, string> = {};
@@ -75,6 +77,7 @@ function runBootScript(options: {
     querySelectorAll: (selector: string) => (selector === 'meta[name="theme-color"]' ? [meta] : []),
   };
   const fakeWindow = {
+    ...(options.isElectron ? { desktopBridge: {} } : {}),
     localStorage: {
       getItem: (key: string): string | null => {
         if (options.storageThrows) throw new Error("storage blocked");
@@ -93,6 +96,7 @@ function runBootScript(options: {
 
   return {
     isDark: classes.has("dark"),
+    isElectron: classes.has("electron"),
     themeId: documentElement.dataset.themeId,
     themeSelected: documentElement.dataset.themeSelected,
     backgroundColor: documentElement.style.backgroundColor,
@@ -100,6 +104,19 @@ function runBootScript(options: {
     metaContent: meta.content,
   };
 }
+
+describe("desktop theme boot", () => {
+  it("marks Electron before first paint without installing an opaque root color", () => {
+    const boot = runBootScript({
+      storage: { [THEME_STORAGE_KEY]: "t3-chat" },
+      prefersDark: true,
+      isElectron: true,
+    });
+
+    expect(boot.isElectron).toBe(true);
+    expect(boot.backgroundColor).toBe("");
+  });
+});
 
 /** Mirrors getStored + readAppearanceModePreference + resolveThemeAppearance from the runtime. */
 function runtimeResolvedAppearance(

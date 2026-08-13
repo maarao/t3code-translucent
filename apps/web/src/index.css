@@ -1641,27 +1641,38 @@ html.electron body {
   background-color: transparent;
 }
 
-html.electron [data-slot="sidebar-wrapper"] {
-  background-color: color-mix(in srgb, var(--sidebar) var(--glass-opacity), transparent);
-}
-
 html.electron [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--sidebar) var(--glass-opacity), transparent);
 }
 
 html.electron [data-slot="sidebar-inset"],
-html.electron .thread-terminal-drawer,
-html.electron [data-slot="sidebar-inset"] .bg-background {
+html.electron .thread-terminal-drawer {
   background-color: color-mix(in srgb, var(--background) var(--glass-opacity), transparent);
 }
 
-html.electron [data-slot="sidebar-container"],
+/* The current sidebar passes its solid background class to the fixed outer
+   container. It must remain clear or it hides both the translucent inner
+   surface and Electron's native material behind it. */
+html.electron [data-slot="sidebar-container"] {
+  background-color: transparent;
+}
+
+/* Structural children previously painted the same solid token over their
+   translucent parent. Let the parent own the tint and blur so nested layout
+   wrappers do not compound 80% opacity into an effectively opaque surface. */
+html.electron [data-slot="sidebar-inset"] > .bg-background,
+html.electron [data-chat-header] {
+  background-color: transparent;
+}
+
+html.electron [data-slot="sidebar-inner"],
 html.electron [data-slot="sidebar-inset"],
 html.electron .thread-terminal-drawer {
+  position: relative;
   isolation: isolate;
 }
 
-html.electron [data-slot="sidebar-container"]::before,
+html.electron [data-slot="sidebar-inner"]::before,
 html.electron [data-slot="sidebar-inset"]::before,
 html.electron .thread-terminal-drawer::before {
   position: absolute;
@@ -1674,7 +1685,7 @@ html.electron .thread-terminal-drawer::before {
   backdrop-filter: blur(22px) saturate(var(--glass-saturation));
 }
 
-html.electron [data-slot="sidebar-container"] > *,
+html.electron [data-slot="sidebar-inner"] > *,
 html.electron [data-slot="sidebar-inset"] > *,
 html.electron .thread-terminal-drawer > * {
   z-index: 1;
